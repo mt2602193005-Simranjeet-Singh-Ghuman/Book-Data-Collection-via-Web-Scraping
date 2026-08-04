@@ -1,0 +1,24 @@
+# Book Web Scraper — install with:
+#   pip install -r requirements.txt
+#   playwright install chromium
+
+# HTTP client for normal page downloads
+requests>=2.31.0
+
+# HTML parsing
+beautifulsoup4>=4.12.0
+
+# Faster parser used by BeautifulSoup
+lxml>=5.0.0
+
+# Browser fallback when a site needs JavaScript or blocks requests
+playwright>=1.40.0
+
+# CSV handling
+pandas>=2.0.0
+
+# Optional cover image checks
+Pillow>=10.0.0
+
+# Optional progress bars
+tqdm>=4.66.0
