@@ -35,28 +35,6 @@ desktop.ini
 .playwright/
 playwright-report/
 
-# Generated scrape output (keep folder placeholders via .gitkeep)
-output/JSON_Master/*
-!output/JSON_Master/.gitkeep
-output/JSON/Amazon/*
-!output/JSON/Amazon/.gitkeep
-output/JSON/Kobo/*
-!output/JSON/Kobo/.gitkeep
-output/JSON/Audible/*
-!output/JSON/Audible/.gitkeep
-output/JSON/BookBub/*
-!output/JSON/BookBub/.gitkeep
-output/JSON/Goodreads/*
-!output/JSON/Goodreads/.gitkeep
-output/Cover_Page/*
-!output/Cover_Page/.gitkeep
-output/Blurb/*
-!output/Blurb/.gitkeep
-output/Reviews/*
-!output/Reviews/.gitkeep
-output/Preprocessing/*
-!output/Preprocessing/.gitkeep
-
 # Duplicate CSV accidentally left at project root
 /2602193005.csv
 

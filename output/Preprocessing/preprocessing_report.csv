@@ -1,0 +1,101 @@
+isbn13,source,issue_type,details,action_taken
+9780143127550,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9780306406157,Input,ISBN Normalized,ISBN-10 validated and converted to ISBN-13,Stored ISBN-13 skeleton in master + source JSON files
+N/A,Input,Invalid ISBN,12345 | ISBN must be 10 or 13 digits after cleaning; got length 5: 12345,Skipped and continued
+9780143127550,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9780143127550,Goodreads,Scrape Success,method=requests+bs4; covers=1; reviews=30; blurb=yes,Master JSON + source JSON updated
+9780143127550,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9780143127550,Amazon,Reviews Shortfall,Saved 0 reviews; target was 25,Saved available reviews and continued
+9780143127550,Amazon,Scrape Success,method=requests+bs4; covers=1; reviews=0; blurb=yes,Master JSON + source JSON updated
+9780143127550,Goodreads,Scrape Success,method=requests+bs4; covers=1; reviews=30; blurb=yes,Master JSON + source JSON updated
+N/A,Input,Invalid ISBN,Exception has occurred: SystemExit | ISBN must be 10 or 13 digits after cleaning; got length 2: Exception has occurred: SystemExit,Skipped and continued
+9780395312612,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9780395312612,Amazon,Reviews Shortfall,Saved 0 reviews; target was 25,Saved available reviews and continued
+9780395312612,Amazon,Scrape Success,method=requests+bs4; covers=3; reviews=0; blurb=yes,Master JSON + source JSON updated
+9780395312612,Kobo,Parsing Failure,Kobo: no exact catalog match for ISBN 9780395312612 (requests+bs4 / Playwright). Note: Kobo may only list a different ebook ISBN for the same title.,Stored N/A and continued
+9780395312612,Audible,Parsing Failure,Audible: no audiobook catalog match for ISBN 9780395312612. Audible often does not index print/paperback ISBNs.,Stored N/A and continued
+9780395312612,BookBub,Parsing Failure,BookBub: no book page discovered for ISBN 9780395312612. No matching BookBub book result for this ISBN.,Stored N/A and continued
+9780395312612,Goodreads,Scrape Success,method=requests+bs4; covers=1; reviews=30; blurb=yes,Master JSON + source JSON updated
+9780395312612,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9781555035310,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9780875792071,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9780373241903,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9780877476146,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9781573459174,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9780679408215,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9780060156336,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9780664257439,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9780226323985,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9780449237823,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9780830723331,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9780821764480,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9781569551554,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9780860919933,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9780875799179,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9780813524924,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9782070404056,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9780345336552,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9780517548295,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9780395312612,Amazon,Network Failure,Amazon: could not extract usable book data with requests+bs4 or Playwright for ISBN 9780395312612,Stored N/A and continued
+9780395312612,Kobo,Parsing Failure,Kobo: no exact catalog match for ISBN 9780395312612 (requests+bs4 / Playwright). Note: Kobo may only list a different ebook ISBN for the same title.,Stored N/A and continued
+9780395312612,Audible,Parsing Failure,Audible: no audiobook catalog match for ISBN 9780395312612. Audible often does not index print/paperback ISBNs.,Stored N/A and continued
+9780395312612,BookBub,Parsing Failure,BookBub: no book page discovered for ISBN 9780395312612. No matching BookBub book result for this ISBN.,Stored N/A and continued
+9780395312612,Goodreads,Scrape Success,method=requests+bs4; covers=1; reviews=30; blurb=yes,Master JSON + source JSON updated
+9781555035310,Amazon,Network Failure,Amazon: could not extract usable book data with requests+bs4 or Playwright for ISBN 9781555035310,Stored N/A and continued
+9781555035310,Kobo,Parsing Failure,Kobo: no exact catalog match for ISBN 9781555035310 (requests+bs4 / Playwright). Note: Kobo may only list a different ebook ISBN for the same title.,Stored N/A and continued
+9781555035310,Audible,Parsing Failure,Audible: no audiobook catalog match for ISBN 9781555035310. Audible often does not index print/paperback ISBNs.,Stored N/A and continued
+9781555035310,BookBub,Parsing Failure,BookBub: no book page discovered for ISBN 9781555035310. No matching BookBub book result for this ISBN.,Stored N/A and continued
+9781555035310,Goodreads,Reviews Shortfall,Saved 23 reviews; target was 25,Saved available reviews and continued
+9781555035310,Goodreads,Scrape Success,method=requests+bs4; covers=1; reviews=23; blurb=yes,Master JSON + source JSON updated
+9780875792071,Amazon,Network Failure,Amazon: could not extract usable book data with requests+bs4 or Playwright for ISBN 9780875792071,Stored N/A and continued
+9780875792071,Kobo,Parsing Failure,Kobo: no exact catalog match for ISBN 9780875792071 (requests+bs4 / Playwright). Note: Kobo may only list a different ebook ISBN for the same title.,Stored N/A and continued
+9780875792071,Audible,Parsing Failure,Audible: no audiobook catalog match for ISBN 9780875792071. Audible often does not index print/paperback ISBNs.,Stored N/A and continued
+9780875792071,BookBub,Parsing Failure,BookBub: no book page discovered for ISBN 9780875792071. No matching BookBub book result for this ISBN.,Stored N/A and continued
+9780875792071,Goodreads,Reviews Shortfall,Saved 3 reviews; target was 25,Saved available reviews and continued
+9780875792071,Goodreads,Scrape Success,method=requests+bs4; covers=1; reviews=3; blurb=yes,Master JSON + source JSON updated
+9780373241903,Amazon,Network Failure,Amazon: could not extract usable book data with requests+bs4 or Playwright for ISBN 9780373241903,Stored N/A and continued
+9780373241903,Kobo,Parsing Failure,Kobo: no exact catalog match for ISBN 9780373241903 (requests+bs4 / Playwright). Note: Kobo may only list a different ebook ISBN for the same title.,Stored N/A and continued
+9780373241903,Audible,Parsing Failure,Audible: no audiobook catalog match for ISBN 9780373241903. Audible often does not index print/paperback ISBNs.,Stored N/A and continued
+9780373241903,BookBub,Parsing Failure,BookBub: no book page discovered for ISBN 9780373241903. No matching BookBub book result for this ISBN.,Stored N/A and continued
+9780373241903,Goodreads,Scrape Success,method=requests+bs4; covers=1; reviews=27; blurb=yes,Master JSON + source JSON updated
+9780877476146,Amazon,Reviews Shortfall,Saved 4 reviews; target was 25,Saved available reviews and continued
+9780877476146,Amazon,Scrape Success,method=requests+bs4; covers=1; reviews=4; blurb=yes,Master JSON + source JSON updated
+9780877476146,Kobo,Parsing Failure,Kobo: no exact catalog match for ISBN 9780877476146 (requests+bs4 / Playwright). Note: Kobo may only list a different ebook ISBN for the same title.,Stored N/A and continued
+9780877476146,Audible,Parsing Failure,Audible: no audiobook catalog match for ISBN 9780877476146. Audible often does not index print/paperback ISBNs.,Stored N/A and continued
+9780877476146,BookBub,Parsing Failure,BookBub: no book page discovered for ISBN 9780877476146. No matching BookBub book result for this ISBN.,Stored N/A and continued
+9780877476146,Goodreads,Network Failure,Goodreads: could not extract usable book data with requests+bs4 or Playwright for ISBN 9780877476146,Stored N/A and continued
+9781573459174,Amazon,Reviews Shortfall,Saved 0 reviews; target was 25,Saved available reviews and continued
+9781573459174,Amazon,Scrape Success,method=requests+bs4; covers=1; reviews=0; blurb=yes,Master JSON + source JSON updated
+9781573459174,Kobo,Parsing Failure,Kobo: no exact catalog match for ISBN 9781573459174 (requests+bs4 / Playwright). Note: Kobo may only list a different ebook ISBN for the same title.,Stored N/A and continued
+9781573459174,Audible,Parsing Failure,Audible: no audiobook catalog match for ISBN 9781573459174. Audible often does not index print/paperback ISBNs.,Stored N/A and continued
+9781573459174,BookBub,Parsing Failure,BookBub: no book page discovered for ISBN 9781573459174. No matching BookBub book result for this ISBN.,Stored N/A and continued
+9781573459174,Goodreads,Missing Cover Image,No cover downloaded,Continued without cover
+9781573459174,Goodreads,Reviews Shortfall,Saved 1 reviews; target was 25,Saved available reviews and continued
+9781573459174,Goodreads,Scrape Success,method=requests+bs4; covers=0; reviews=1; blurb=yes,Master JSON + source JSON updated
+9780679408215,Amazon,Network Failure,Amazon: could not extract usable book data with requests+bs4 or Playwright for ISBN 9780679408215,Stored N/A and continued
+9780679408215,Kobo,Parsing Failure,Kobo: no exact catalog match for ISBN 9780679408215 (requests+bs4 / Playwright). Note: Kobo may only list a different ebook ISBN for the same title.,Stored N/A and continued
+9780679408215,Audible,Parsing Failure,Audible: no audiobook catalog match for ISBN 9780679408215. Audible often does not index print/paperback ISBNs.,Stored N/A and continued
+9780679408215,BookBub,Parsing Failure,BookBub: no book page discovered for ISBN 9780679408215. No matching BookBub book result for this ISBN.,Stored N/A and continued
+9780679408215,Goodreads,Scrape Success,method=requests+bs4; covers=1; reviews=30; blurb=yes,Master JSON + source JSON updated
+9780060156336,Amazon,Missing Cover Image,No cover downloaded,Continued without cover
+9780060156336,Amazon,Reviews Shortfall,Saved 5 reviews; target was 25,Saved available reviews and continued
+9780060156336,Amazon,Scrape Success,method=requests+bs4; covers=0; reviews=5; blurb=yes,Master JSON + source JSON updated
+9780060156336,Kobo,Parsing Failure,Kobo: no exact catalog match for ISBN 9780060156336 (requests+bs4 / Playwright). Note: Kobo may only list a different ebook ISBN for the same title.,Stored N/A and continued
+9780060156336,Audible,Parsing Failure,Audible: no audiobook catalog match for ISBN 9780060156336. Audible often does not index print/paperback ISBNs.,Stored N/A and continued
+9780060156336,BookBub,Parsing Failure,BookBub: no book page discovered for ISBN 9780060156336. No matching BookBub book result for this ISBN.,Stored N/A and continued
+9780060156336,Goodreads,Reviews Shortfall,Saved 8 reviews; target was 25,Saved available reviews and continued
+9780060156336,Goodreads,Scrape Success,method=requests+bs4; covers=1; reviews=8; blurb=yes,Master JSON + source JSON updated
+9782842612894,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9782842612894,Amazon,Network Failure,Amazon: could not extract usable book data with requests+bs4 or Playwright for ISBN 9782842612894,Stored N/A and continued
+9782842612894,Goodreads,Scrape Success,method=requests+bs4; covers=1; reviews=29; blurb=yes,Master JSON + source JSON updated
+9782842612894,Kobo,Parsing Failure,Kobo: no catalog match for ISBN 9782842612894 (requests+bs4 / Playwright). Kobo often lists a different ebook ISBN for the same title.,Stored N/A and continued
+9782842612894,Audible,Reviews Shortfall,Saved 0 reviews; target was 25,Saved available reviews and continued
+9782842612894,Audible,Scrape Success,method=requests+bs4; covers=1; reviews=0; blurb=yes,Master JSON + source JSON updated
+9782842612894,BookBub,Parsing Failure,BookBub: no book page discovered for ISBN 9782842612894. No matching BookBub book result for this query. Title search: No matching BookBub book result for this query.,Stored N/A and continued
+9780064473002,Input,ISBN Normalized,ISBN-13 validated,Stored ISBN-13 skeleton in master + source JSON files
+9780064473002,Amazon,Reviews Shortfall,Saved 2 reviews; target was 25,Saved available reviews and continued
+9780064473002,Amazon,Scrape Success,method=requests+bs4; covers=1; reviews=2; blurb=yes,Master JSON + source JSON updated
+9780064473002,Goodreads,Scrape Success,method=requests+bs4; covers=1; reviews=29; blurb=yes,Master JSON + source JSON updated
+9780064473002,Kobo,Parsing Failure,Kobo: no catalog match for ISBN 9780064473002 (requests+bs4 / Playwright). Kobo often lists a different ebook ISBN for the same title.,Stored N/A and continued
+9780064473002,Audible,Parsing Failure,Audible: no audiobook catalog match for ISBN 9780064473002. Audible often does not index print/paperback ISBNs.,Stored N/A and continued
+9780064473002,BookBub,Parsing Failure,BookBub: no book page discovered for ISBN 9780064473002. BookBub /search appears unavailable from this region (US search feature / Page Not Found). Title search: BookBub /search appears unavailable from this region (US search feature / Page Not Found).,Stored N/A and continued
