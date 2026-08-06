@@ -47,14 +47,14 @@ PREPROCESSING_DIR: Final[Path] = OUTPUT_DIR / "Preprocessing"
 # Folder names under output/JSON/ use these display names.
 # Filename source tokens are lowercase (see SOURCE_FILE_TOKENS).
 SOURCES: Final[tuple[str, ...]] = (
+    "Goodreads",
     "Amazon",
     "Kobo",
     "Audible",
     "BookBub",
-    "Goodreads",
 )
 
-# Lowercase tokens used inside cover/blurb/review filenames.
+# Lowercase tokens used inside cover/review filenames.
 # Example: 9780143127550_cp_goodreads_1.jpg
 SOURCE_FILE_TOKENS: Final[dict[str, str]] = {
     "Amazon": "amazon",
@@ -62,6 +62,25 @@ SOURCE_FILE_TOKENS: Final[dict[str, str]] = {
     "Audible": "audible",
     "BookBub": "bookbub",
     "Goodreads": "goodreads",
+}
+
+# Blurb filename source tokens (professor-required casing).
+# Example: 9780131103627_b_Amazon_1.txt
+BLURB_SOURCE_TOKENS: Final[dict[str, str]] = {
+    "Amazon": "Amazon",
+    "Kobo": "Kobo",
+    "Audible": "Audible",
+    "BookBub": "BookBub",
+    "Goodreads": "Goodreads",
+}
+
+# Per-source Blurb subfolders under output/Blurb/
+BLURB_SOURCE_FOLDERS: Final[dict[str, str]] = {
+    "Amazon": "Amazon_Blurb",
+    "Kobo": "Kobo_Blurb",
+    "Audible": "Audible_Blurb",
+    "BookBub": "BookBub_Blurb",
+    "Goodreads": "Goodreads_Blurb",
 }
 
 # ------------------------------------------------------------------------------
@@ -85,9 +104,9 @@ PREPROCESSING_CSV_PATH: Final[Path] = PREPROCESSING_DIR / PREPROCESSING_CSV_FILE
 # ------------------------------------------------------------------------------
 # MEDIA / TEXT FILE NAMING (underscores — approved)
 # ------------------------------------------------------------------------------
-# Cover : <isbn13>_cp_<source>_<n>.jpg
-# Blurb : <isbn13>_b_<source>_<n>.txt
-# Review: <isbn13>_r_<source>_<n>.txt
+# Cover : <isbn13>_cp_<source>_<n>.jpg   (lowercase source token)
+# Blurb : <isbn13>_b_<Source>_<n>.txt    (capitalized Source, professor rule)
+# Review: <isbn13>_r_<source>_1.txt      (all reviews for that source in one file)
 COVER_FILENAME_TEMPLATE: Final[str] = "{isbn13}_cp_{source}_{n}.jpg"
 BLURB_FILENAME_TEMPLATE: Final[str] = "{isbn13}_b_{source}_{n}.txt"
 REVIEW_FILENAME_TEMPLATE: Final[str] = "{isbn13}_r_{source}_{n}.txt"
@@ -96,13 +115,14 @@ REVIEW_FILENAME_TEMPLATE: Final[str] = "{isbn13}_r_{source}_{n}.txt"
 # SCRAPING / RUNTIME SETTINGS
 # ------------------------------------------------------------------------------
 # Assignment constraint: delay 1–2 seconds between consecutive HTTP requests.
-REQUEST_DELAY_SECONDS: Final[tuple[float, float]] = (1.0, 2.0)
+# Stay inside the required range but prefer the low end for lab runtime.
+REQUEST_DELAY_SECONDS: Final[tuple[float, float]] = (1.0, 1.25)
 
-# HTTP timeout (seconds) — used later by scrapers.
-HTTP_TIMEOUT_SECONDS: Final[int] = 30
+# HTTP timeout (seconds) — used later by scrapers / Playwright navigation.
+HTTP_TIMEOUT_SECONDS: Final[int] = 45
 
 # How many times to retry a failed network request before logging and continuing.
-MAX_RETRIES: Final[int] = 3
+MAX_RETRIES: Final[int] = 2
 
 # Placeholder for any unavailable field (never delete the field).
 MISSING_VALUE: Final[str] = "N/A"
@@ -199,4 +219,14 @@ def all_output_directories() -> list[Path]:
     for source in SOURCES:
         directories.append(JSON_DIR / source)
 
+    # Professor-required Blurb subfolders:
+    # output/Blurb/Amazon_Blurb/, Kobo_Blurb/, ...
+    for source in SOURCES:
+        directories.append(BLURB_DIR / BLURB_SOURCE_FOLDERS[source])
+
     return directories
+
+
+def blurb_dir_for_source(source: str) -> Path:
+    """Return output/Blurb/<Source>_Blurb/ for one website."""
+    return BLURB_DIR / BLURB_SOURCE_FOLDERS[source]

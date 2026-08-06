@@ -19,6 +19,7 @@ from bs4 import BeautifulSoup, Tag
 import config
 from scraper.base import BaseScraper, ScrapedBook
 from utils.isbn import isbn13_to_isbn10
+from utils.title_match import listing_matches_hints, note_title_match
 
 
 class KoboScraper(BaseScraper):
@@ -35,12 +36,11 @@ class KoboScraper(BaseScraper):
         urls: list[str] = []
         for query in queries:
             encoded = quote(query)
+            # Keep storefront list short — extra locales mostly add delay.
             urls.extend(
                 [
                     f"https://www.kobo.com/us/en/search?query={encoded}",
-                    f"https://www.kobo.com/in/en/search?query={encoded}",
                     f"https://www.kobo.com/ww/en/search?query={encoded}",
-                    f"https://www.kobo.com/ca/en/search?query={encoded}",
                 ]
             )
         return urls
@@ -62,7 +62,6 @@ class KoboScraper(BaseScraper):
         result = ScrapedBook(source=self.source_name, isbn13=isbn13)
         result.fields = self._empty_fields(isbn13)
 
-        # Pass 1: ISBN / ISBN-10 exact match
         hit = self._try_search_urls(
             isbn13,
             self.build_candidate_urls(isbn13),
@@ -71,37 +70,38 @@ class KoboScraper(BaseScraper):
         if hit is not None:
             return hit
 
-        # Pass 2: title (+ author) when Amazon/Goodreads already found the book
         title_urls = self._build_title_search_urls(hint_title, hint_authors)
         if title_urls:
             hit = self._try_search_urls(
                 isbn13,
                 title_urls,
                 require_isbn_match=False,
+                hint_title=hint_title,
+                hint_authors=hint_authors,
             )
             if hit is not None:
                 return hit
 
-        result.error = (
-            f"Kobo: no catalog match for ISBN {isbn13} "
-            f"(requests+bs4 / Playwright). "
-            f"Kobo often lists a different ebook ISBN for the same title."
-        )
+        result.error = f"Kobo: could not fetch book data for ISBN {isbn13}."
         return result
 
     def _build_title_search_urls(self, title: str, authors: str) -> list[str]:
-        title = (title or "").strip()
+        from utils.title_match import clean_hint_title
+
+        title = clean_hint_title(title) or (title or "").strip()
         if not title or title == config.MISSING_VALUE:
             return []
         authors = (authors or "").strip()
         if authors == config.MISSING_VALUE:
             authors = ""
-        query = f"{title} {authors}".strip()
-        encoded = quote(query)
-        return [
-            f"https://www.kobo.com/us/en/search?query={encoded}",
-            f"https://www.kobo.com/ww/en/search?query={encoded}",
-        ]
+        queries = [f"{title} {authors}".strip(), title]
+        urls: list[str] = []
+        for query in queries:
+            if not query:
+                continue
+            encoded = quote(query)
+            urls.append(f"https://www.kobo.com/us/en/search?query={encoded}")
+        return self.unique_non_empty(urls)
 
     def _try_search_urls(
         self,
@@ -109,6 +109,8 @@ class KoboScraper(BaseScraper):
         urls: list[str],
         *,
         require_isbn_match: bool,
+        hint_title: str = "",
+        hint_authors: str = "",
     ) -> Optional[ScrapedBook]:
         """Try a list of Kobo search/product URLs; return first useful parse."""
         for url in urls:
@@ -124,69 +126,110 @@ class KoboScraper(BaseScraper):
                 soup = self.make_soup(html)
                 parsed = self.parse_book_page(soup, page_url=url, isbn13=isbn13)
 
-                product_url = self._find_matching_product_url(soup, isbn13)
-                if not product_url and not require_isbn_match:
-                    product_url = self._find_first_product_url(soup)
+                product_urls: list[str] = []
+                matched = self._find_matching_product_url(soup, isbn13)
+                if matched:
+                    product_urls.append(matched)
+                if not require_isbn_match:
+                    product_urls.extend(self._find_product_urls(soup, limit=5))
+                product_urls = self.unique_non_empty(product_urls)
 
-                if (
-                    not self.is_parse_useful(parsed)
-                    or (require_isbn_match and not self._structured_isbn_match(soup, isbn13))
-                ) and product_url:
+                candidates: list[tuple[BeautifulSoup, ScrapedBook, str]] = [
+                    (soup, parsed, url)
+                ]
+                for product_url in product_urls:
+                    if (
+                        self.is_parse_useful(parsed)
+                        and (
+                            not require_isbn_match
+                            or self._structured_isbn_match(soup, isbn13)
+                        )
+                    ):
+                        break
                     self.polite_delay()
                     product_html = fetcher(product_url)
-                    if product_html and not self._looks_like_challenge(product_html):
-                        soup = self.make_soup(product_html)
-                        parsed = self.parse_book_page(
-                            soup,
-                            page_url=product_url,
-                            isbn13=isbn13,
-                        )
+                    if not product_html or self._looks_like_challenge(product_html):
+                        continue
+                    product_soup = self.make_soup(product_html)
+                    product_parsed = self.parse_book_page(
+                        product_soup,
+                        page_url=product_url,
+                        isbn13=isbn13,
+                    )
+                    candidates.append((product_soup, product_parsed, product_url))
 
-                if not self.is_parse_useful(parsed):
-                    continue
-
-                if require_isbn_match and not self._structured_isbn_match(soup, isbn13):
-                    continue
-
-                parsed.method_used = method
-                parsed.success = True
-                if not require_isbn_match:
-                    # Title-fallback hit: ebook ISBN may differ from print ISBN.
-                    edition = str(parsed.fields.get("edition", config.MISSING_VALUE))
-                    note = "matched by title (ebook ISBN may differ)"
-                    if edition in {config.MISSING_VALUE, "", None}:
-                        parsed.fields["edition"] = note
-                    elif note not in edition:
-                        parsed.fields["edition"] = f"{edition} | {note}"
-                return self._enrich_reviews_if_needed(parsed)
+                for cand_soup, cand_parsed, _cand_url in candidates:
+                    if not self.is_parse_useful(cand_parsed):
+                        continue
+                    if require_isbn_match and not self._structured_isbn_match(
+                        cand_soup, isbn13
+                    ):
+                        continue
+                    if not require_isbn_match and not listing_matches_hints(
+                        hint_title=hint_title,
+                        hint_authors=hint_authors,
+                        found_title=str(cand_parsed.fields.get("title", "")),
+                        found_authors=str(cand_parsed.fields.get("authors", "")),
+                    ):
+                        continue
+                    cand_parsed.method_used = method
+                    cand_parsed.success = True
+                    if not require_isbn_match:
+                        note_title_match(cand_parsed.fields)
+                    return self._enrich_reviews_if_needed(cand_parsed)
         return None
 
-    def _find_first_product_url(self, soup: BeautifulSoup) -> str:
-        """First ebook product link from search HTML (title fallback)."""
+    @staticmethod
+    def _store_code(page_props: dict[str, Any]) -> str:
+        """
+        Kobo pageProps.storeFront is sometimes a string ('us') and sometimes
+        a dict like {'country': 'us', ...}. Always return a 2-letter code.
+        """
+        store = page_props.get("storeFront") or "us"
+        if isinstance(store, dict):
+            country = str(store.get("country") or "us").strip().lower()
+            return country or "us"
+        text = str(store).strip().lower()
+        return text if text and "{" not in text else "us"
+
+    def _find_product_urls(self, soup: BeautifulSoup, limit: int = 5) -> list[str]:
+        """Collect ebook product links from a Kobo search page."""
+        urls: list[str] = []
         script = soup.find("script", id="__NEXT_DATA__")
         if isinstance(script, Tag) and script.string:
             try:
                 data = json.loads(script.string)
                 page_props = data.get("props", {}).get("pageProps", {})
                 items = (page_props.get("searchResultSSR") or {}).get("Items") or []
-                store = page_props.get("storeFront") or "us"
+                store = self._store_code(page_props)
                 for item in items:
                     book = item.get("Book") if isinstance(item, dict) else None
                     if not isinstance(book, dict):
                         continue
                     slug = book.get("Slug")
                     if slug:
-                        return f"https://www.kobo.com/{store}/en/ebook/{slug}"
+                        urls.append(f"https://www.kobo.com/{store}/en/ebook/{slug}")
+                    if len(urls) >= limit:
+                        return urls
             except json.JSONDecodeError:
                 pass
 
         for anchor in soup.select('a[href*="/ebook/"]'):
             href = str(anchor.get("href") or "")
-            if "/ebook/" in href and "search" not in href:
-                if href.startswith("http"):
-                    return href.split("?")[0]
-                return "https://www.kobo.com" + href.split("?")[0]
-        return ""
+            if "/ebook/" not in href or "search" in href:
+                continue
+            if href.startswith("http"):
+                urls.append(href.split("?")[0])
+            else:
+                urls.append("https://www.kobo.com" + href.split("?")[0])
+            if len(urls) >= limit:
+                break
+        return self.unique_non_empty(urls)
+
+    def _find_first_product_url(self, soup: BeautifulSoup) -> str:
+        """First ebook product link from search HTML (title fallback)."""
+        urls = self._find_product_urls(soup, limit=1)
+        return urls[0] if urls else ""
 
     def is_parse_useful(self, parsed: ScrapedBook) -> bool:
         """Reject Kobo chrome/search shell pages that are not real books."""
@@ -233,7 +276,7 @@ class KoboScraper(BaseScraper):
                     timeout=config.HTTP_TIMEOUT_SECONDS * 1000,
                 )
                 # Kobo search often redirects to /ebook/... after hydration.
-                page.wait_for_timeout(4500)
+                page.wait_for_timeout(2500)
                 html = page.content()
                 final_url = page.url
                 context.close()
@@ -292,6 +335,26 @@ class KoboScraper(BaseScraper):
         if result.fields.get("authors") in {config.MISSING_VALUE, None, ""}:
             result.fields["authors"] = self._extract_authors_html(soup)
 
+        # 4) "eBook Details" panel from Inspect Element, including Book ID.
+        # Example:
+        #   Book ID: 9781101634615
+        #   Release Date: June 26, 2014
+        #   Language: English
+        #   Imprint / publisher links
+        detail_fields = self._extract_ebook_details_html(soup)
+        for key, value in detail_fields.items():
+            if key.startswith("_"):
+                continue
+            if key in result.fields and value:
+                current = result.fields.get(key)
+                if current in {config.MISSING_VALUE, "", None}:
+                    result.fields[key] = self.text_or_na(value)
+
+        if result.fields.get("genres") in {config.MISSING_VALUE, None, ""}:
+            genres = self._extract_genres_html(soup)
+            if genres:
+                result.fields["genres"] = ", ".join(genres)
+
         if not result.cover_urls:
             result.cover_urls = self._extract_cover_urls_html(soup)
 
@@ -303,6 +366,110 @@ class KoboScraper(BaseScraper):
         if result.blurb and result.fields.get("description") == config.MISSING_VALUE:
             result.fields["description"] = self.text_or_na(result.blurb)
         return result
+
+    def _extract_ebook_details_html(self, soup: BeautifulSoup) -> dict[str, str]:
+        """
+        Parse Kobo 'eBook Details' list items.
+
+        Kobo labels the ISBN as Book ID on the product page (not always as ISBN).
+        That is the key mapping for PL Assignment ISBN matching on Kobo.
+        """
+        fields: dict[str, str] = {}
+        # Heading "eBook Details" then following list items.
+        heading = None
+        for node in soup.find_all(["h2", "h3"]):
+            if "ebook details" in node.get_text(" ", strip=True).lower():
+                heading = node
+                break
+
+        list_items: list[Tag] = []
+        if heading is not None:
+            sibling = heading.find_next(["ul", "ol", "div"])
+            if isinstance(sibling, Tag):
+                list_items = [li for li in sibling.find_all("li") if isinstance(li, Tag)]
+
+        if not list_items:
+            # Fallback: any list item that mentions Book ID / Release Date.
+            for li in soup.find_all("li"):
+                text = li.get_text(" ", strip=True)
+                if re.search(r"Book ID\s*:", text, flags=re.I) or re.search(
+                    r"Release Date\s*:", text, flags=re.I
+                ):
+                    list_items.append(li)
+
+        for li in list_items:
+            text = " ".join(li.get_text(" ", strip=True).split())
+            # Label: Value rows
+            match = re.match(r"^\s*([^:]+)\s*:\s*(.+)\s*$", text)
+            if match:
+                label = match.group(1).strip().lower()
+                value = match.group(2).strip()
+                if label == "book id":
+                    # Map Book ID -> ISBN-13 for matching / diagnostics.
+                    fields["_page_isbn"] = re.sub(r"[^0-9Xx]", "", value)
+                elif label == "release date":
+                    fields["publication_date"] = value
+                elif label == "language":
+                    fields["language"] = value
+                elif label == "imprint":
+                    fields.setdefault("publisher", value)
+                continue
+
+            # Publisher sometimes appears as a bare linked list item
+            # (e.g. "Penguin Publishing Group") near Book ID rows.
+            if (
+                "publisher" not in fields
+                and len(text) <= 80
+                and not re.search(r"book id|release date|language|download|file size", text, re.I)
+                and li.find("a")
+            ):
+                fields["publisher"] = text
+
+        # Also accept Book ID anywhere in page text as a safety net.
+        if "_page_isbn" not in fields:
+            page_text = soup.get_text("\n", strip=True)
+            book_id = re.search(r"Book ID\s*:\s*([0-9Xx\-]{10,17})", page_text, flags=re.I)
+            if book_id:
+                fields["_page_isbn"] = re.sub(r"[^0-9Xx]", "", book_id.group(1))
+
+        return fields
+
+    def _extract_genres_html(self, soup: BeautifulSoup) -> list[str]:
+        """
+        Genres on Kobo appear as category breadcrumbs / rank lines, e.g.
+        Fiction & Literature, Thrillers, Literary.
+        """
+        genres: list[str] = []
+        # Prefer product-local ranking / breadcrumb widgets (avoid site nav).
+        for anchor in soup.select(
+            ".category-rankings a, "
+            "[class*='category-ranking'] a, "
+            "[data-testid*='categor'] a, "
+            "ol.breadcrumb a, "
+            "nav.breadcrumb a"
+        ):
+            text = anchor.get_text(" ", strip=True)
+            if not text:
+                continue
+            lowered = text.lower()
+            if lowered in {"home", "ebooks", "audiobooks", "kobo", "store"}:
+                continue
+            cleaned = re.sub(r"^#?\d+\s*in\s*", "", text, flags=re.I).strip(" ,")
+            parts = [p.strip() for p in cleaned.split(",") if p.strip()]
+            genres.extend(parts if parts else [text])
+        if genres:
+            return self.unique_non_empty(genres)[:8]
+
+        # Fallback: only /ebooks/category-style links with short labels.
+        for anchor in soup.select('a[href*="/ebook/"][href*="category"], a[href*="/ebooks/"]'):
+            text = anchor.get_text(" ", strip=True)
+            if not text or len(text) > 48:
+                continue
+            lowered = text.lower()
+            if lowered in {"home", "ebooks", "audiobooks", "kobo", "see all"}:
+                continue
+            genres.append(text)
+        return self.unique_non_empty(genres)[:8]
 
     # ------------------------------------------------------------------
     # Extractors
@@ -460,7 +627,7 @@ class KoboScraper(BaseScraper):
             blurb = self._strip_html(str(desc))
             fields["description"] = blurb
         slug = matched_book.get("Slug")
-        store = page_props.get("storeFront") or "us"
+        store = self._store_code(page_props)
         if slug:
             product_url = f"https://www.kobo.com/{store}/en/ebook/{slug}"
             fields["url"] = product_url
@@ -527,6 +694,11 @@ class KoboScraper(BaseScraper):
                 continue
             if "book-images" in src or "cover" in alt or "cdn.kobo.com" in src:
                 urls.append(src)
+        if not urls:
+            for meta in soup.select('meta[property="og:image"], meta[name="og:image"]'):
+                content = str(meta.get("content") or "").strip()
+                if content.startswith("http"):
+                    urls.append(content)
         return self.unique_non_empty(urls)[:3]
 
     def _extract_reviews_html(self, soup: BeautifulSoup) -> list[str]:
@@ -577,8 +749,17 @@ class KoboScraper(BaseScraper):
 
     def _structured_isbn_match(self, soup: BeautifulSoup, isbn13: str) -> bool:
         """
-        Return True only when JSON-LD or __NEXT_DATA__ contains this ISBN.
+        Return True when this ISBN matches Kobo's Book ID / structured ISBN.
+
+        Important (professor note):
+            On Kobo product pages the ISBN is labeled **Book ID**, e.g.
+            Book ID: 9781101634615
         """
+        details = self._extract_ebook_details_html(soup)
+        page_isbn = details.get("_page_isbn", "")
+        if page_isbn and page_isbn.upper() == isbn13.upper():
+            return True
+
         # JSON-LD gtin13 / sku / workExample.isbn
         for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
             try:

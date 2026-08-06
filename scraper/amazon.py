@@ -3,17 +3,20 @@ scraper/amazon.py
 
 Looks up a book on Amazon (.com and .in) by ISBN.
 Amazon blocks plain requests a lot, so Playwright is used when needed.
+Prefers amazon.in and title/author search (after Goodreads) to reduce CAPTCHA.
 """
 
 from __future__ import annotations
 
 import re
+from typing import Optional
 from urllib.parse import quote, urljoin
 
 from bs4 import BeautifulSoup, Tag
 
 import config
 from scraper.base import BaseScraper, ScrapedBook
+from utils.title_match import listing_matches_hints, note_title_match
 
 
 class AmazonScraper(BaseScraper):
@@ -31,11 +34,12 @@ class AmazonScraper(BaseScraper):
             Normalized ISBN-13.
         """
         encoded = quote(isbn13)
+        # amazon.in first — often less CAPTCHA-heavy from India networks.
         return [
-            f"https://www.amazon.com/dp/{encoded}",
             f"https://www.amazon.in/dp/{encoded}",
-            f"https://www.amazon.com/s?k={encoded}&i=stripbooks",
+            f"https://www.amazon.com/dp/{encoded}",
             f"https://www.amazon.in/s?k={encoded}&i=stripbooks",
+            f"https://www.amazon.com/s?k={encoded}&i=stripbooks",
         ]
 
     def scrape(
@@ -48,69 +52,285 @@ class AmazonScraper(BaseScraper):
         """
         Resolve a product URL when needed, then run Level-1 / Level-2 parsing.
 
-        Amazon search pages do not contain full book metadata, so we first try
-        to convert search hits into /dp/ product URLs before parsing fields.
+        When Goodreads (or another site) already found title/author, prefer
+        title search first — direct /dp/{ISBN} URLs trigger CAPTCHA more often.
         """
-        _ = hint_title, hint_authors
         result = ScrapedBook(source=self.source_name, isbn13=isbn13)
         result.fields = self._empty_fields(isbn13)
 
+        has_hints = bool(
+            (hint_title or "").strip()
+            and hint_title.strip() != config.MISSING_VALUE
+        )
+
+        # 1) Title/author path first when hints exist (CAPTCHA avoidance).
+        if has_hints:
+            title_urls = self._resolve_product_urls_from_query(hint_title, hint_authors)
+            if title_urls:
+                hit = self._try_product_urls(
+                    isbn13,
+                    title_urls,
+                    require_isbn_match=False,
+                    hint_title=hint_title,
+                    hint_authors=hint_authors,
+                )
+                if hit is not None:
+                    note_title_match(hit.fields)
+                    return hit
+
+        # 2) ISBN /dp + ISBN search
         try:
             candidate_urls = self._resolve_product_urls(isbn13)
         except Exception as exc:  # noqa: BLE001
             result.error = f"URL resolve failed: {exc}"
             return result
 
-        # Keep a fallback if no page hard-matches the ISBN-13 in details.
+        hit = self._try_product_urls(
+            isbn13,
+            candidate_urls,
+            require_isbn_match=True,
+            hint_title="",
+            hint_authors="",
+        )
+        if hit is not None:
+            return hit
+
+        # 3) Title/author again if ISBN path failed and we skipped step 1
+        if not has_hints:
+            title_urls = self._resolve_product_urls_from_query(hint_title, hint_authors)
+        else:
+            title_urls = []
+        if title_urls:
+            hit = self._try_product_urls(
+                isbn13,
+                title_urls,
+                require_isbn_match=False,
+                hint_title=hint_title,
+                hint_authors=hint_authors,
+            )
+            if hit is not None:
+                note_title_match(hit.fields)
+                return hit
+
+        result.error = f"Amazon: could not fetch book data for ISBN {isbn13}."
+        return result
+
+    def fetch_html_requests(self, url: str) -> Optional[str]:
+        """Level-1 fetch; treat CAPTCHA shells as failure immediately."""
+        html = super().fetch_html_requests(url)
+        if html and self._looks_like_captcha(html):
+            return None
+        return html
+
+    def fetch_html_playwright(self, url: str) -> Optional[str]:
+        """
+        Level-2 Amazon fetch with anti-bot hardening.
+
+        - Prefer stealth Chromium settings
+        - Warm up on the store homepage (cookies)
+        - Retry once if a CAPTCHA shell appears
+        - Use en-IN locale for amazon.in
+        """
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            return None
+
+        is_in = "amazon.in" in url
+        home = "https://www.amazon.in/" if is_in else "https://www.amazon.com/"
+        locale = "en-IN" if is_in else "en-US"
+        timezone = "Asia/Kolkata" if is_in else "America/New_York"
+
+        try:
+            with sync_playwright() as playwright:
+                browser = None
+                # Real Chrome channel helps when available; else bundled Chromium.
+                for launch_kwargs in (
+                    {
+                        "channel": "chrome",
+                        "headless": True,
+                        "args": ["--disable-blink-features=AutomationControlled"],
+                    },
+                    {
+                        "headless": True,
+                        "args": ["--disable-blink-features=AutomationControlled"],
+                    },
+                ):
+                    try:
+                        browser = playwright.chromium.launch(**launch_kwargs)
+                        break
+                    except Exception:  # noqa: BLE001
+                        browser = None
+                if browser is None:
+                    return None
+
+                context = browser.new_context(
+                    user_agent=self.DEFAULT_HEADERS["User-Agent"],
+                    locale=locale,
+                    timezone_id=timezone,
+                    viewport={"width": 1366, "height": 768},
+                    extra_http_headers={
+                        "Accept-Language": (
+                            "en-IN,en;q=0.9" if is_in else "en-US,en;q=0.9"
+                        ),
+                    },
+                )
+                page = context.new_page()
+                page.add_init_script(
+                    "Object.defineProperty(navigator, 'webdriver', "
+                    "{get: () => undefined});"
+                )
+
+                # Homepage warm-up reduces empty/CAPTCHA shells on /dp/ pages.
+                try:
+                    page.goto(
+                        home,
+                        wait_until="domcontentloaded",
+                        timeout=config.HTTP_TIMEOUT_SECONDS * 1000,
+                    )
+                    page.wait_for_timeout(1200)
+                except Exception:  # noqa: BLE001
+                    pass
+
+                html = ""
+                for attempt in range(2):
+                    page.goto(
+                        url,
+                        wait_until="domcontentloaded",
+                        timeout=config.HTTP_TIMEOUT_SECONDS * 1000,
+                    )
+                    page.wait_for_timeout(2500 + attempt * 1500)
+                    # Light scroll helps product widgets hydrate.
+                    try:
+                        page.mouse.wheel(0, 1200)
+                        page.wait_for_timeout(800)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    html = page.content()
+                    if html and not self._looks_like_captcha(html) and len(html) > 5000:
+                        break
+                    page.wait_for_timeout(2000)
+
+                final_url = page.url
+                context.close()
+                browser.close()
+                if html and len(html) > 500 and not self._looks_like_captcha(html):
+                    return f"<!-- AMAZON_FINAL_URL:{final_url} -->\n" + html
+        except Exception:  # noqa: BLE001
+            return None
+        return None
+
+    def _try_product_urls(
+        self,
+        isbn13: str,
+        candidate_urls: list[str],
+        *,
+        require_isbn_match: bool,
+        hint_title: str,
+        hint_authors: str,
+    ) -> ScrapedBook | None:
+        """Try product URLs; optionally require ISBN or title/author match."""
         fallback: ScrapedBook | None = None
 
         for url in candidate_urls:
-            # ---- Level 1 ----
-            self.polite_delay()
-            html = self.fetch_html_requests(url)
-            if html and not self._looks_like_captcha(html):
-                parsed = self.parse_book_page(self.make_soup(html), url, isbn13)
-                if self.is_parse_useful(parsed):
-                    parsed.method_used = "requests+bs4"
-                    if self._isbn_matches_page(html, isbn13):
+            # Playwright first: Amazon requests almost always hit CAPTCHA.
+            for method, fetcher in (
+                ("playwright", self.fetch_html_playwright),
+                ("requests+bs4", self.fetch_html_requests),
+            ):
+                self.polite_delay()
+                html = fetcher(url)
+                if not html or self._looks_like_captcha(html):
+                    continue
+                # Prefer final URL marker when Playwright redirected.
+                page_url = url
+                marker = re.search(
+                    r"AMAZON_FINAL_URL:(https://[^\s\"'<>]+)", html[:900]
+                )
+                if marker:
+                    page_url = marker.group(1).rstrip(".,;)")
+                soup = self.make_soup(html)
+                parsed = self.parse_book_page(soup, page_url, isbn13)
+                if not self.is_parse_useful(parsed) or self._looks_like_bundle_title(
+                    parsed
+                ):
+                    continue
+                parsed.method_used = method
+                if require_isbn_match:
+                    if self._isbn_matches_page(soup, html, isbn13):
                         parsed.success = True
                         return self._enrich_reviews_if_needed(parsed)
-                    if fallback is None:
+                    if fallback is None and self._has_pl_details(parsed):
                         fallback = parsed
+                    continue
+                if listing_matches_hints(
+                    hint_title=hint_title,
+                    hint_authors=hint_authors,
+                    found_title=str(parsed.fields.get("title", "")),
+                    found_authors=str(parsed.fields.get("authors", "")),
+                ):
+                    parsed.success = True
+                    return self._enrich_reviews_if_needed(parsed)
 
-            # ---- Level 2 ----
-            self.polite_delay()
-            html = self.fetch_html_playwright(url)
-            if html and not self._looks_like_captcha(html):
-                parsed = self.parse_book_page(self.make_soup(html), url, isbn13)
-                if self.is_parse_useful(parsed):
-                    parsed.method_used = "playwright"
-                    if self._isbn_matches_page(html, isbn13):
-                        parsed.success = True
-                        return self._enrich_reviews_if_needed(parsed)
-                    if fallback is None:
-                        fallback = parsed
-
-        if fallback is not None:
+        if require_isbn_match and fallback is not None:
             fallback.success = True
             return self._enrich_reviews_if_needed(fallback)
+        return None
 
-        result.error = (
-            f"Amazon: could not extract usable book data "
-            f"with requests+bs4 or Playwright for ISBN {isbn13}"
-        )
-        return result
+    def _isbn_matches_page(
+        self,
+        soup: BeautifulSoup,
+        html: str,
+        isbn13: str,
+    ) -> bool:
+        """
+        Return True when THIS product's detail bullets contain the ISBN-13.
+
+        Do not search the whole HTML (related products / ads caused false matches
+        and led to box-set pages being accepted).
+        """
+        details = self._extract_detail_bullets(soup)
+        page_isbn = re.sub(r"[^0-9Xx]", "", str(details.get("_page_isbn", "")))
+        if page_isbn and page_isbn.upper() == isbn13.upper():
+            return True
+
+        # Narrow check inside detail-bullet markup only.
+        detail_html = ""
+        for node in soup.select(
+            "#detailBullets_feature_div, #detailBulletsWrapper_feature_div, "
+            "#productDetails_detailBullets_sections1, #productDetailsTable"
+        ):
+            detail_html += str(node)
+        if not detail_html:
+            return False
+        compact = re.sub(r"[^0-9Xx]", "", detail_html)
+        return isbn13 in compact
 
     @staticmethod
-    def _isbn_matches_page(html: str, isbn13: str) -> bool:
-        """
-        Return True when the product HTML clearly mentions this ISBN-13.
+    def _looks_like_bundle_title(parsed: ScrapedBook) -> bool:
+        """Reject Amazon box-sets / multipacks that are not the single book."""
+        title = str(parsed.fields.get("title", "")).lower()
+        banned = (
+            "box set",
+            "boxed set",
+            "bestselling",
+            " collection",
+            "bundle",
+            "3 set",
+            "2 set",
+            "set -",
+            "omnibus",
+        )
+        return any(token in title for token in banned)
 
-        Helps avoid saving a different edition discovered via Amazon search.
-        """
-        compact = re.sub(r"[^0-9Xx]", "", html)
-        return isbn13 in compact or isbn13 in html
-
+    @staticmethod
+    def _has_pl_details(parsed: ScrapedBook) -> bool:
+        """True if at least one PL Assignment detail field was extracted."""
+        for key in ("publisher", "publication_date", "language", "origin_country"):
+            value = str(parsed.fields.get(key, config.MISSING_VALUE)).strip()
+            if value and value != config.MISSING_VALUE:
+                return True
+        return False
     def parse_book_page(
         self,
         soup: BeautifulSoup,
@@ -164,28 +384,63 @@ class AmazonScraper(BaseScraper):
         """
         encoded = quote(isbn13)
         direct = [
-            f"https://www.amazon.com/dp/{encoded}",
             f"https://www.amazon.in/dp/{encoded}",
+            f"https://www.amazon.com/dp/{encoded}",
         ]
         search_urls = [
-            f"https://www.amazon.com/s?k={encoded}&i=stripbooks",
             f"https://www.amazon.in/s?k={encoded}&i=stripbooks",
+            f"https://www.amazon.com/s?k={encoded}&i=stripbooks",
         ]
 
         found: list[str] = []
         for search_url in search_urls:
             self.polite_delay()
-            html = self.fetch_html_requests(search_url)
-            if not html or self._looks_like_captcha(html):
-                html = self.fetch_html_playwright(search_url)
+            # Playwright first — search via requests is almost always CAPTCHA.
+            html = self.fetch_html_playwright(search_url)
+            if not html:
+                html = self.fetch_html_requests(search_url)
             if not html or self._looks_like_captcha(html):
                 continue
             soup = self.make_soup(html)
             for href in self._extract_dp_links(soup, base_url=search_url):
                 found.append(href)
+            if found:
+                break
 
         # Preserve order, unique: direct first, then discovered links.
         return self.unique_non_empty(direct + found)
+
+    def _resolve_product_urls_from_query(
+        self,
+        title: str,
+        authors: str,
+    ) -> list[str]:
+        """Harvest /dp/ product links from an Amazon title/author search."""
+        title = (title or "").strip()
+        if not title or title == config.MISSING_VALUE:
+            return []
+        authors = (authors or "").strip()
+        if authors == config.MISSING_VALUE:
+            authors = ""
+        encoded = quote(f"{title} {authors}".strip())
+        search_urls = [
+            f"https://www.amazon.in/s?k={encoded}&i=stripbooks",
+            f"https://www.amazon.com/s?k={encoded}&i=stripbooks",
+        ]
+        found: list[str] = []
+        for search_url in search_urls:
+            self.polite_delay()
+            html = self.fetch_html_playwright(search_url)
+            if not html:
+                html = self.fetch_html_requests(search_url)
+            if not html or self._looks_like_captcha(html):
+                continue
+            soup = self.make_soup(html)
+            for href in self._extract_dp_links(soup, base_url=search_url):
+                found.append(href)
+            if found:
+                break
+        return self.unique_non_empty(found)
 
     def _extract_dp_links(self, soup: BeautifulSoup, base_url: str) -> list[str]:
         """Extract Amazon /dp/ASIN product links from a search page."""
@@ -244,14 +499,32 @@ class AmazonScraper(BaseScraper):
         selectors = [
             "#bylineInfo .author a",
             "#bylineInfo a.a-link-normal",
+            "#bylineInfo span.author a",
+            "span.author a.a-link-normal",
             ".author a",
             "span.author a",
             "#follow_author_link",
+            "a.contributorNameID",
+            "#booksTitle .author a",
         ]
+        banned = {
+            "visit amazon's",
+            "follow",
+            "search",
+            "audible",
+            "kindle",
+            "(author)",
+            "(editor)",
+        }
         for selector in selectors:
             for node in soup.select(selector):
                 text = node.get_text(" ", strip=True)
-                if text and text.lower() not in {"visit amazon's", "follow"}:
+                low = text.lower()
+                if not text or any(b in low for b in banned):
+                    continue
+                # Drop trailing role labels: "Joni Hilton (Author)"
+                text = re.sub(r"\s*\((author|editor|narrator)\)\s*$", "", text, flags=re.I)
+                if text:
                     authors.append(text)
             if authors:
                 break
@@ -327,16 +600,45 @@ class AmazonScraper(BaseScraper):
                     return self.text_or_na(text)
         return config.MISSING_VALUE
 
+    @staticmethod
+    def _clean_amazon_label(text: str) -> str:
+        """
+        Amazon detail rows contain invisible RTL marks (U+200E / U+200F).
+
+        Example raw text from Inspect Element:
+            Publisher ‏ : ‎ Penguin Press
+        Without stripping those marks, key matching fails and publisher
+        incorrectly becomes N/A even though the value is on the page.
+        """
+        cleaned = re.sub(r"[\u200e\u200f\u202a-\u202e]", "", text or "")
+        return re.sub(r"\s+", " ", cleaned).strip()
+
     def _extract_detail_bullets(self, soup: BeautifulSoup) -> dict[str, str]:
         """
         Parse Amazon detail bullets / product overview into our schema keys.
+
+        PL Assignment fields commonly found here:
+        Publisher, Publication date, Language, and sometimes Country of Origin.
         """
         details: dict[str, str] = {}
         rows: list[tuple[str, str]] = []
 
-        # detailBullets style: <span class="a-text-bold">Publisher</span> <span>Value</span>
+        # Prefer bold label span + following value span (stable Inspect Element pattern).
         for li in soup.select("#detailBullets_feature_div li, #detailBulletsWrapper_feature_div li"):
-            text = li.get_text(" ", strip=True)
+            bold = li.select_one("span.a-text-bold")
+            if bold:
+                key = self._clean_amazon_label(bold.get_text(" ", strip=True)).rstrip(":")
+                # Value is usually the last non-bold span in the row.
+                value_spans = [
+                    self._clean_amazon_label(s.get_text(" ", strip=True))
+                    for s in li.select("span")
+                    if "a-text-bold" not in (s.get("class") or [])
+                ]
+                value = next((v for v in reversed(value_spans) if v and v != ":"), "")
+                if key and value:
+                    rows.append((key, value))
+                    continue
+            text = self._clean_amazon_label(li.get_text(" ", strip=True))
             if ":" in text:
                 key, value = text.split(":", 1)
                 rows.append((key.strip(), value.strip()))
@@ -378,11 +680,14 @@ class AmazonScraper(BaseScraper):
             "series": "series",
             "edition": "edition",
             "listening length": "format",
+            "country of origin": "origin_country",
+            "country/region of origin": "origin_country",
+            "manufacturer": "ignored",
         }
 
         for raw_key, raw_value in rows:
-            key_l = re.sub(r"\s+", " ", raw_key).strip().lower().rstrip(":")
-            value = raw_value.strip()
+            key_l = self._clean_amazon_label(raw_key).lower().rstrip(":")
+            value = self._clean_amazon_label(raw_value)
             if not value:
                 continue
 
@@ -418,6 +723,9 @@ class AmazonScraper(BaseScraper):
                 details[mapped] = value
             elif "language" in key_l:
                 details["language"] = value
+            elif "country of origin" in key_l or key_l == "country":
+                # PL Assignment: Origin / Country of publication
+                details["origin_country"] = value
             elif "publication" in key_l or key_l.endswith("date"):
                 details["publication_date"] = value
             elif "series" in key_l:
@@ -439,6 +747,8 @@ class AmazonScraper(BaseScraper):
             "#landingImage",
             "#ebooksImgBlkFront",
             "img[data-a-image-name='landingImage']",
+            "#main-image",
+            "img.a-dynamic-image",
         ]
         for selector in selectors:
             for img in soup.select(selector):
@@ -457,6 +767,11 @@ class AmazonScraper(BaseScraper):
                         urls.append(match)
             if urls:
                 break
+        if not urls:
+            for meta in soup.select('meta[property="og:image"], meta[name="og:image"]'):
+                content = str(meta.get("content") or "").strip()
+                if content.startswith("http"):
+                    urls.append(content)
         # Prefer larger images when duplicates differ only by size params
         return self.unique_non_empty(urls)[:3]
 
@@ -596,35 +911,7 @@ class AmazonScraper(BaseScraper):
 
     def _collect_reviews_with_playwright(self, page_url: str) -> list[str]:
         """Load a product/review page in Chromium and scrape review bodies."""
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:
+        html = self.fetch_html_playwright(page_url)
+        if not html or self._looks_like_captcha(html):
             return []
-
-        try:
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=True)
-                context = browser.new_context(
-                    user_agent=self.DEFAULT_HEADERS["User-Agent"],
-                    locale="en-US",
-                )
-                page = context.new_page()
-                page.goto(
-                    page_url,
-                    wait_until="domcontentloaded",
-                    timeout=config.HTTP_TIMEOUT_SECONDS * 1000,
-                )
-                page.wait_for_timeout(2000)
-
-                for _ in range(6):
-                    page.mouse.wheel(0, 2800)
-                    page.wait_for_timeout(600)
-
-                html = page.content()
-                context.close()
-                browser.close()
-                if self._looks_like_captcha(html):
-                    return []
-                return self._extract_reviews_from_soup(self.make_soup(html))
-        except Exception:  # noqa: BLE001
-            return []
+        return self._extract_reviews_from_soup(self.make_soup(html))

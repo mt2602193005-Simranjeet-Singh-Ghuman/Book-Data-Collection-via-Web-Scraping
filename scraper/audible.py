@@ -18,6 +18,7 @@ from bs4 import BeautifulSoup, Tag
 import config
 from scraper.base import BaseScraper, ScrapedBook
 from utils.isbn import isbn13_to_isbn10
+from utils.title_match import listing_matches_hints, note_title_match
 
 
 class AudibleScraper(BaseScraper):
@@ -60,23 +61,53 @@ class AudibleScraper(BaseScraper):
         result = ScrapedBook(source=self.source_name, isbn13=isbn13)
         result.fields = self._empty_fields(isbn13)
 
+        # If another site already found title/authors, require a real title match
+        # so Audible does not accept a loosely related classic (e.g. ward vs world).
+        has_hints = bool(
+            (hint_title or "").strip()
+            and hint_title.strip() != config.MISSING_VALUE
+        )
+
         product_urls = self._resolve_product_urls_from_searches(
             self.build_candidate_urls(isbn13)
         )
-        used_title_fallback = False
-        if not product_urls:
-            title_urls = self._build_title_search_urls(hint_title, hint_authors)
-            if title_urls:
-                product_urls = self._resolve_product_urls_from_searches(title_urls)
-                used_title_fallback = bool(product_urls)
+        hit = self._try_product_urls(
+            isbn13,
+            product_urls,
+            require_hint_match=has_hints,
+            hint_title=hint_title,
+            hint_authors=hint_authors,
+        )
+        if hit is not None:
+            return hit
 
-        if not product_urls:
-            result.error = (
-                f"Audible: no audiobook catalog match for ISBN {isbn13}. "
-                f"Audible often does not index print/paperback ISBNs."
+        title_search = self._build_title_search_urls(hint_title, hint_authors)
+        if title_search:
+            title_product_urls = self._resolve_product_urls_from_searches(title_search)
+            hit = self._try_product_urls(
+                isbn13,
+                title_product_urls,
+                require_hint_match=True,
+                hint_title=hint_title,
+                hint_authors=hint_authors,
             )
-            return result
+            if hit is not None:
+                note_title_match(hit.fields)
+                return hit
 
+        result.error = f"Audible: could not fetch book data for ISBN {isbn13}."
+        return result
+
+    def _try_product_urls(
+        self,
+        isbn13: str,
+        product_urls: list[str],
+        *,
+        require_hint_match: bool,
+        hint_title: str,
+        hint_authors: str,
+    ) -> Optional[ScrapedBook]:
+        """Fetch and parse product URLs until one listing is usable."""
         for product_url in product_urls:
             for method, fetcher in (
                 ("requests+bs4", self.fetch_html_requests),
@@ -88,39 +119,41 @@ class AudibleScraper(BaseScraper):
                     continue
                 soup = self.make_soup(html)
                 parsed = self.parse_book_page(soup, page_url=product_url, isbn13=isbn13)
-                if self.is_parse_useful(parsed):
-                    parsed.method_used = method
-                    parsed.success = True
-                    if used_title_fallback:
-                        edition = str(parsed.fields.get("edition", config.MISSING_VALUE))
-                        note = "matched by title (audiobook ASIN may differ)"
-                        if edition in {config.MISSING_VALUE, "", None}:
-                            parsed.fields["edition"] = note
-                        elif note not in edition:
-                            parsed.fields["edition"] = f"{edition} | {note}"
-                    return self._enrich_reviews_if_needed(parsed)
-
-        result.error = (
-            f"Audible: found product URL(s) for ISBN {isbn13} but could not "
-            f"extract usable metadata with requests+bs4 or Playwright."
-        )
-        return result
+                if not self.is_parse_useful(parsed):
+                    continue
+                if require_hint_match and not listing_matches_hints(
+                    hint_title=hint_title,
+                    hint_authors=hint_authors,
+                    found_title=str(parsed.fields.get("title", "")),
+                    found_authors=str(parsed.fields.get("authors", "")),
+                ):
+                    continue
+                parsed.method_used = method
+                parsed.success = True
+                return self._enrich_reviews_if_needed(parsed)
+        return None
 
     def _build_title_search_urls(self, title: str, authors: str) -> list[str]:
-        title = (title or "").strip()
+        from utils.title_match import clean_hint_title
+
+        title = clean_hint_title(title) or (title or "").strip()
         if not title or title == config.MISSING_VALUE:
             return []
         authors = (authors or "").strip()
         if authors == config.MISSING_VALUE:
             authors = ""
-        query = quote(f"{title} {authors}".strip())
-        return [
-            (
+        queries = [f"{title} {authors}".strip(), title]
+        urls: list[str] = []
+        for query in queries:
+            if not query:
+                continue
+            encoded = quote(query)
+            urls.append(
                 "https://www.audible.com/search?"
-                f"keywords={query}&ipRedirectOverride=true&overrideBaseCountry=true"
-            ),
-            f"https://www.audible.in/search?keywords={query}",
-        ]
+                f"keywords={encoded}&ipRedirectOverride=true&overrideBaseCountry=true"
+            )
+            urls.append(f"https://www.audible.in/search?keywords={encoded}")
+        return self.unique_non_empty(urls)
 
     def is_parse_useful(self, parsed: ScrapedBook) -> bool:
         """Reject Audible chrome / unavailable shells."""
@@ -132,7 +165,12 @@ class AudibleScraper(BaseScraper):
             "no results",
             "download audio books from audible",
             "listen to audiobooks, podcasts",
+            "whoops",
+            "page not found",
+            "error",
         ]
+        if title in {"whoops", "whoops.", "audible"}:
+            return False
         return not any(fragment in title for fragment in banned_fragments)
 
     def fetch_html_playwright(self, url: str) -> Optional[str]:
@@ -162,7 +200,7 @@ class AudibleScraper(BaseScraper):
                     wait_until="domcontentloaded",
                     timeout=config.HTTP_TIMEOUT_SECONDS * 1000,
                 )
-                page.wait_for_timeout(4000)
+                page.wait_for_timeout(2500)
                 html = page.content()
                 final_url = page.url
                 context.close()
@@ -208,6 +246,20 @@ class AudibleScraper(BaseScraper):
             result.fields["title"] = self._extract_title_html(soup)
         if result.fields.get("authors") in {config.MISSING_VALUE, None, ""}:
             result.fields["authors"] = self._extract_authors_html(soup)
+
+        # PL Assignment fields from Audible product detail labels
+        # (Publisher, Release date, Language) and category breadcrumbs (genres).
+        detail_fields = self._extract_detail_labels_html(soup)
+        for key, value in detail_fields.items():
+            if key in result.fields and value:
+                if result.fields.get(key) in {config.MISSING_VALUE, "", None}:
+                    result.fields[key] = self.text_or_na(value)
+
+        if result.fields.get("genres") in {config.MISSING_VALUE, None, ""}:
+            genres = self._extract_genres_html(soup)
+            if genres:
+                result.fields["genres"] = ", ".join(genres)
+
         if not result.cover_urls:
             result.cover_urls = self._extract_cover_urls_html(soup)
         if not result.reviews:
@@ -220,6 +272,65 @@ class AudibleScraper(BaseScraper):
         result.fields["isbn13"] = isbn13
         result.fields["source"] = self.source_name
         return result
+
+    def _extract_detail_labels_html(self, soup: BeautifulSoup) -> dict[str, str]:
+        """
+        Parse Audible label rows such as:
+          Publisher
+          Penguin Audio
+          Release date
+          07-01-14
+          Language
+          English
+        """
+        fields: dict[str, str] = {}
+        label_map = {
+            "publisher": "publisher",
+            "release date": "publication_date",
+            "publication date": "publication_date",
+            "language": "language",
+            "program type": "format",
+        }
+
+        # Common Audible list layout: li with label + value text.
+        for li in soup.select("li.bc-list-item, li"):
+            text = " ".join(li.get_text(" ", strip=True).split())
+            if not text:
+                continue
+            lowered = text.lower()
+            for label, field in label_map.items():
+                if lowered.startswith(label):
+                    value = text[len(label) :].strip(" :-\u00a0")
+                    if value and field not in fields:
+                        fields[field] = value
+                    break
+
+        # Regex fallback on full page text.
+        page_text = soup.get_text("\n", strip=True)
+        patterns = {
+            "publisher": r"Publisher\s*[:\n]\s*([^\n]{2,80})",
+            "publication_date": r"Release date\s*[:\n]\s*([^\n]{2,40})",
+            "language": r"Language\s*[:\n]\s*([A-Za-z][A-Za-z\-\s]{1,40})",
+        }
+        for key, pattern in patterns.items():
+            if key in fields:
+                continue
+            match = re.search(pattern, page_text, flags=re.I)
+            if match:
+                fields[key] = match.group(1).strip()
+        return fields
+
+    def _extract_genres_html(self, soup: BeautifulSoup) -> list[str]:
+        """Categories / breadcrumbs used as Audible genres."""
+        genres: list[str] = []
+        for anchor in soup.select(
+            "li.categoriesLabel a, a[href*='/cat/'], "
+            "nav.bc-breadcrumb a, .bc-breadcrumb a"
+        ):
+            text = anchor.get_text(" ", strip=True)
+            if text and text.lower() not in {"home", "audible", "categories"}:
+                genres.append(text)
+        return self.unique_non_empty(genres)
 
     # ------------------------------------------------------------------
     # URL resolution
@@ -267,12 +378,16 @@ class AudibleScraper(BaseScraper):
             # Secondary: result heading links nested under product list region
             anchors = soup.select(
                 "div.adbl-search-results li h3 a[href*='/pd/'], "
-                "ul.bc-list li.productListItem a[href*='/pd/']"
+                "ul.bc-list li.productListItem a[href*='/pd/'], "
+                "li.productListItem a[href*='/pd/']"
             )
 
         for anchor in anchors:
             href = str(anchor.get("href") or "")
             if "/pd/" not in href:
+                continue
+            text = anchor.get_text(" ", strip=True).lower()
+            if text in {"whoops", "whoops.", "audible"}:
                 continue
             absolute = urljoin(base_url, href.split("?")[0])
             links.append(absolute)
@@ -430,12 +545,17 @@ class AudibleScraper(BaseScraper):
     def _extract_cover_urls_html(self, soup: BeautifulSoup) -> list[str]:
         urls: list[str] = []
         for img in soup.select("img"):
-            src = str(img.get("src") or "")
+            src = str(img.get("src") or img.get("data-src") or "")
             alt = str(img.get("alt") or "").lower()
             if not src.startswith("http"):
                 continue
-            if "cover" in alt or "/images/I/" in src:
+            if "cover" in alt or "/images/I/" in src or "m.media-amazon.com" in src:
                 urls.append(src)
+        if not urls:
+            for meta in soup.select('meta[property="og:image"], meta[name="og:image"]'):
+                content = str(meta.get("content") or "").strip()
+                if content.startswith("http"):
+                    urls.append(content)
         return self.unique_non_empty(urls)[:3]
 
     def _extract_reviews_html(self, soup: BeautifulSoup) -> list[str]:
@@ -535,7 +655,7 @@ class AudibleScraper(BaseScraper):
 
     @staticmethod
     def _extract_final_url_marker(text: str) -> str:
-        match = re.search(r"AUDIBLE_FINAL_URL:(https://[^\s>-]+)", text)
+        match = re.search(r"AUDIBLE_FINAL_URL:(https://[^\s\"'<>]+)", text)
         return match.group(1) if match else ""
 
     @staticmethod

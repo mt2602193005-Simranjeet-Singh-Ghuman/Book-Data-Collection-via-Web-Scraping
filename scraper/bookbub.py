@@ -19,6 +19,11 @@ from bs4 import BeautifulSoup, Tag
 import config
 from scraper.base import BaseScraper, ScrapedBook
 from utils.isbn import isbn13_to_isbn10
+from utils.title_match import (
+    listing_matches_hints,
+    note_title_match,
+    significant_title_tokens,
+)
 
 
 class BookBubScraper(BaseScraper):
@@ -67,20 +72,35 @@ class BookBubScraper(BaseScraper):
         )
         used_title_fallback = False
         if not product_urls:
-            title_urls = self._build_title_search_urls(hint_title, hint_authors)
-            if title_urls:
-                product_urls, title_note = self._resolve_product_urls_from_searches(
-                    title_urls
+            # Prefer guessed /books/<slug> URLs first: BookBub /search is often
+            # geo-blocked and can return truncated junk links like /books/everything.
+            direct_books = [
+                f"https://www.bookbub.com/books/{slug}"
+                for slug in self._title_author_slugs(hint_title, hint_authors)
+            ]
+            search_urls = self._build_title_search_urls(hint_title, hint_authors)
+            search_urls = [u for u in search_urls if "/books/" not in u]
+            if direct_books:
+                product_urls = direct_books
+                discovery_note = "Tried BookBub /books/<slug> from title+author."
+                used_title_fallback = True
+            if search_urls:
+                searched, title_note = self._resolve_product_urls_from_searches(
+                    search_urls
                 )
-                if product_urls:
+                searched = self._filter_book_urls_for_title(searched, hint_title)
+                if searched:
+                    # Keep slug guesses first, then filtered search hits.
+                    product_urls = self.unique_non_empty(product_urls + searched)
                     used_title_fallback = True
                     discovery_note = title_note
-                else:
+                elif not product_urls:
                     discovery_note = f"{discovery_note} Title search: {title_note}"
 
         if not product_urls:
+            # Keep discovery_note in the log only (via result.error detail for CSV).
             result.error = (
-                f"BookBub: no book page discovered for ISBN {isbn13}. "
+                f"BookBub: could not fetch book data for ISBN {isbn13}. "
                 f"{discovery_note}"
             )
             return result
@@ -99,22 +119,22 @@ class BookBubScraper(BaseScraper):
                     page_url=product_url,
                     isbn13=isbn13,
                 )
-                if self.is_parse_useful(parsed):
-                    parsed.method_used = method
-                    parsed.success = True
-                    if used_title_fallback:
-                        edition = str(parsed.fields.get("edition", config.MISSING_VALUE))
-                        note = "matched by title (BookBub listing may differ)"
-                        if edition in {config.MISSING_VALUE, "", None}:
-                            parsed.fields["edition"] = note
-                        elif note not in edition:
-                            parsed.fields["edition"] = f"{edition} | {note}"
-                    return parsed
+                if not self.is_parse_useful(parsed):
+                    continue
+                if used_title_fallback and not listing_matches_hints(
+                    hint_title=hint_title,
+                    hint_authors=hint_authors,
+                    found_title=str(parsed.fields.get("title", "")),
+                    found_authors=str(parsed.fields.get("authors", "")),
+                ):
+                    continue
+                parsed.method_used = method
+                parsed.success = True
+                if used_title_fallback:
+                    note_title_match(parsed.fields)
+                return parsed
 
-        result.error = (
-            f"BookBub: discovered URL(s) for ISBN {isbn13} but could not "
-            f"extract usable metadata."
-        )
+        result.error = f"BookBub: could not fetch book data for ISBN {isbn13}."
         return result
 
     def _build_title_search_urls(self, title: str, authors: str) -> list[str]:
@@ -125,10 +145,71 @@ class BookBubScraper(BaseScraper):
         if authors == config.MISSING_VALUE:
             authors = ""
         query = quote(f"{title} {authors}".strip())
-        return [
+        urls = [
             f"https://www.bookbub.com/search?search={query}",
             f"https://www.bookbub.com/search?q={query}",
         ]
+        # When /search is geo-blocked, BookBub book pages often still work via slug:
+        #   /books/everything-i-never-told-you-by-celeste-ng
+        for slug in self._title_author_slugs(title, authors):
+            urls.append(f"https://www.bookbub.com/books/{slug}")
+        return urls
+
+    @staticmethod
+    def _title_author_slugs(title: str, authors: str) -> list[str]:
+        """Build likely BookBub /books/<slug> paths from title + author."""
+        from utils.title_match import clean_hint_title
+
+        def slugify(text: str) -> str:
+            text = text.lower().strip()
+            text = re.sub(r"['’]", "", text)
+            text = re.sub(r"[^a-z0-9]+", "-", text)
+            return text.strip("-")
+
+        title = (title or "").strip()
+        if not title or title == config.MISSING_VALUE:
+            return []
+        # Try cleaned title first (strip series parentheses), then raw.
+        title_variants = []
+        cleaned = clean_hint_title(title)
+        if cleaned:
+            title_variants.append(cleaned)
+        if title not in title_variants:
+            title_variants.append(title)
+
+        first_author = authors.split(",")[0].strip() if authors else ""
+        if first_author == config.MISSING_VALUE:
+            first_author = ""
+        author_slug = slugify(first_author) if first_author else ""
+
+        slugs: list[str] = []
+        for variant in title_variants:
+            title_slug = slugify(variant)
+            if not title_slug:
+                continue
+            if author_slug:
+                slugs.append(f"{title_slug}-by-{author_slug}")
+            slugs.append(title_slug)
+        return list(dict.fromkeys(slugs))
+
+    def _filter_book_urls_for_title(self, urls: list[str], title: str) -> list[str]:
+        """Drop truncated /books/<one-word> links that cannot match the title."""
+        tokens = significant_title_tokens(title)
+        if not tokens:
+            return urls
+        kept: list[str] = []
+        for url in urls:
+            match = re.search(r"/books/([^/?#]+)", url)
+            if not match:
+                continue
+            slug = match.group(1).lower()
+            slug_tokens = set(re.findall(r"[a-z0-9]+", slug)) - {"by"}
+            # Reject single-token junk like /books/everything
+            if len(slug_tokens) < 2:
+                continue
+            if len(tokens & slug_tokens) >= max(2, min(3, len(tokens) // 2)):
+                kept.append(url)
+        return kept
 
     def is_parse_useful(self, parsed: ScrapedBook) -> bool:
         """Reject BookBub chrome / not-found shells."""
@@ -197,7 +278,7 @@ class BookBubScraper(BaseScraper):
                     wait_until="domcontentloaded",
                     timeout=config.HTTP_TIMEOUT_SECONDS * 1000,
                 )
-                page.wait_for_timeout(4500)
+                page.wait_for_timeout(2500)
                 html = page.content()
                 final_url = page.url
                 context.close()
@@ -247,6 +328,14 @@ class BookBubScraper(BaseScraper):
             genres = self._extract_genres_html(soup)
             if genres:
                 result.fields["genres"] = ", ".join(genres)
+
+        # Extra PL Assignment fields from visible label/value text when present.
+        visible = self._extract_visible_metadata(soup)
+        for key, value in visible.items():
+            if key in result.fields and value:
+                if result.fields.get(key) in {config.MISSING_VALUE, "", None}:
+                    result.fields[key] = self.text_or_na(value)
+
         if not result.cover_urls:
             result.cover_urls = self._extract_cover_urls_html(soup)
         if not result.reviews:
@@ -258,6 +347,39 @@ class BookBubScraper(BaseScraper):
         if result.fields.get("format") == config.MISSING_VALUE:
             result.fields["format"] = "EBook"
         return result
+
+    def _extract_visible_metadata(self, soup: BeautifulSoup) -> dict[str, str]:
+        """
+        Best-effort label parsing for publisher / language / date / country
+        from BookBub book pages (Inspect Element text patterns).
+        """
+        fields: dict[str, str] = {}
+        page_text = soup.get_text("\n", strip=True)
+        patterns = {
+            "publisher": r"(?:Publisher|Published by)\s*[:\-]\s*([^\n]{2,80})",
+            "language": r"(?:Language)\s*[:\-]\s*([A-Za-z][A-Za-z\-\s]{1,40})",
+            "publication_date": (
+                r"(?:Publication Date|Release Date)\s*[:\-]\s*"
+                r"([A-Za-z]+\s+\d{1,2},?\s+\d{4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4})"
+            ),
+            "origin_country": r"(?:Country of Origin|Origin Country)\s*[:\-]\s*([A-Za-z][A-Za-z\s]{1,40})",
+        }
+        banned_values = {
+            "description",
+            "from bookbub",
+            "share with your network",
+            "buy this book",
+            "more",
+        }
+        for key, pattern in patterns.items():
+            match = re.search(pattern, page_text, flags=re.I)
+            if not match:
+                continue
+            value = match.group(1).strip()
+            if value.lower() in banned_values:
+                continue
+            fields[key] = value
+        return fields
 
     # ------------------------------------------------------------------
     # Discovery
@@ -374,6 +496,21 @@ class BookBubScraper(BaseScraper):
                     fields["authors"] = ", ".join(self.unique_non_empty(authors))
                 if item.get("isbn"):
                     fields["_page_isbn"] = re.sub(r"[^0-9Xx]", "", str(item["isbn"]))
+                # Extra PL fields when BookBub embeds them in JSON-LD.
+                publisher = item.get("publisher")
+                if isinstance(publisher, dict) and publisher.get("name"):
+                    fields["publisher"] = str(publisher["name"])
+                elif isinstance(publisher, str) and publisher.strip():
+                    fields["publisher"] = publisher.strip()
+                for date_key in ("datePublished", "dateCreated", "releaseDate"):
+                    if item.get(date_key):
+                        fields["publication_date"] = str(item[date_key])[:32]
+                        break
+                language = item.get("inLanguage") or item.get("language")
+                if isinstance(language, dict) and language.get("name"):
+                    fields["language"] = str(language["name"])
+                elif isinstance(language, str) and language.strip():
+                    fields["language"] = language.strip()
                 rating = item.get("aggregateRating")
                 if isinstance(rating, dict):
                     if rating.get("ratingValue") is not None:
@@ -457,6 +594,11 @@ class BookBubScraper(BaseScraper):
                 continue
             if "book cover" in alt or "bookbub/image" in src or "pro_pbid_" in src:
                 urls.append(src)
+        if not urls:
+            for meta in soup.select('meta[property="og:image"], meta[name="og:image"]'):
+                content = str(meta.get("content") or "").strip()
+                if content.startswith("http"):
+                    urls.append(content)
         return self.unique_non_empty(urls)[:3]
 
     def _extract_reviews_html(self, soup: BeautifulSoup) -> list[str]:
@@ -487,8 +629,9 @@ class BookBubScraper(BaseScraper):
 
     @staticmethod
     def _extract_final_url_marker(text: str) -> str:
-        match = re.search(r"BOOKBUB_FINAL_URL:(https://[^\s>-]+)", text)
-        return match.group(1) if match else ""
+        # Allow hyphens in paths (BookBub slugs are hyphenated).
+        match = re.search(r"BOOKBUB_FINAL_URL:(https://[^\s\"'<>]+)", text)
+        return match.group(1).rstrip(".,;)") if match else ""
 
     @staticmethod
     def _canonical_url(soup: BeautifulSoup) -> str:

@@ -235,19 +235,27 @@ class BaseScraper(ABC):
 
         try:
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=True)
+                browser = playwright.chromium.launch(
+                    headless=True,
+                    args=["--disable-blink-features=AutomationControlled"],
+                )
                 context = browser.new_context(
                     user_agent=self.DEFAULT_HEADERS["User-Agent"],
                     locale="en-US",
+                    viewport={"width": 1366, "height": 768},
                 )
                 page = context.new_page()
+                page.add_init_script(
+                    "Object.defineProperty(navigator, 'webdriver', "
+                    "{get: () => undefined});"
+                )
                 page.goto(
                     url,
                     wait_until="domcontentloaded",
                     timeout=config.HTTP_TIMEOUT_SECONDS * 1000,
                 )
                 # Extra wait helps JS-rendered book widgets appear.
-                page.wait_for_timeout(2500)
+                page.wait_for_timeout(2000)
                 html = page.content()
                 context.close()
                 browser.close()

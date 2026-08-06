@@ -16,6 +16,7 @@ from bs4 import BeautifulSoup, Tag
 
 import config
 from scraper.base import BaseScraper, ScrapedBook
+from utils.title_match import listing_matches_hints, note_title_match
 
 
 class GoodreadsScraper(BaseScraper):
@@ -35,6 +36,8 @@ class GoodreadsScraper(BaseScraper):
         encoded = quote(isbn13)
         return [
             f"https://www.goodreads.com/book/isbn/{encoded}",
+            # Goodreads search uses "query" (not only "q").
+            f"https://www.goodreads.com/search?utf8=%E2%9C%93&query={encoded}",
             f"https://www.goodreads.com/search?q={encoded}",
         ]
 
@@ -46,10 +49,8 @@ class GoodreadsScraper(BaseScraper):
         hint_authors: str = "",
     ) -> ScrapedBook:
         """
-        Extend base scrape with Playwright review enrichment when needed.
-
-        If Level-1/2 got a title but fewer than MIN_REVIEWS_PER_SOURCE reviews,
-        open the book URL again in Playwright and try to collect more reviews.
+        ISBN lookup first; title/author search if another site already found
+        the book. Enrich reviews with Playwright when short.
         """
         result = super().scrape(
             isbn13,
@@ -57,14 +58,84 @@ class GoodreadsScraper(BaseScraper):
             hint_authors=hint_authors,
         )
         if not result.success:
-            return result
+            title_hit = self._scrape_by_title_author(
+                isbn13,
+                hint_title=hint_title,
+                hint_authors=hint_authors,
+            )
+            if title_hit is not None:
+                result = title_hit
+            else:
+                return result
 
+        return self._enrich_reviews_if_needed(result)
+
+    def _scrape_by_title_author(
+        self,
+        isbn13: str,
+        *,
+        hint_title: str,
+        hint_authors: str,
+    ) -> Optional[ScrapedBook]:
+        """Search Goodreads by title/author when ISBN pages fail."""
+        title = (hint_title or "").strip()
+        if not title or title == config.MISSING_VALUE:
+            return None
+        authors = (hint_authors or "").strip()
+        if authors == config.MISSING_VALUE:
+            authors = ""
+        encoded = quote(f"{title} {authors}".strip())
+        urls = [
+            f"https://www.goodreads.com/search?utf8=%E2%9C%93&query={encoded}",
+            f"https://www.goodreads.com/search?q={encoded}",
+        ]
+        for url in urls:
+            for method, fetcher in (
+                ("requests+bs4", self.fetch_html_requests),
+                ("playwright", self.fetch_html_playwright),
+            ):
+                self.polite_delay()
+                html = fetcher(url)
+                if not html:
+                    continue
+                soup = self.make_soup(html)
+                parsed = self.parse_book_page(soup, page_url=url, isbn13=isbn13)
+                # Follow first /book/show/ if still on search results.
+                book_url = self._extract_canonical_or_book_url(soup, url)
+                if book_url and book_url != url and (
+                    not self.is_parse_useful(parsed)
+                    or "/search" in str(parsed.fields.get("url", url))
+                ):
+                    self.polite_delay()
+                    book_html = fetcher(book_url)
+                    if book_html:
+                        soup = self.make_soup(book_html)
+                        parsed = self.parse_book_page(
+                            soup, page_url=book_url, isbn13=isbn13
+                        )
+                if not self.is_parse_useful(parsed):
+                    continue
+                if not listing_matches_hints(
+                    hint_title=hint_title,
+                    hint_authors=hint_authors,
+                    found_title=str(parsed.fields.get("title", "")),
+                    found_authors=str(parsed.fields.get("authors", "")),
+                ):
+                    continue
+                parsed.method_used = method
+                parsed.success = True
+                note_title_match(parsed.fields)
+                return parsed
+        return None
+
+    def _enrich_reviews_if_needed(self, result: ScrapedBook) -> ScrapedBook:
+        """Open the book URL in Playwright when review count is short."""
         if len(result.reviews) >= config.MIN_REVIEWS_PER_SOURCE:
             return result
 
         page_url = str(result.fields.get("url", "")).strip()
         if not page_url.startswith("http"):
-            page_url = self.build_candidate_urls(isbn13)[0]
+            page_url = self.build_candidate_urls(result.isbn13)[0]
 
         extra_reviews = self._collect_reviews_with_playwright(page_url)
         if extra_reviews:
@@ -251,12 +322,85 @@ class GoodreadsScraper(BaseScraper):
 
     def _extract_details_from_page(self, soup: BeautifulSoup) -> dict[str, str]:
         """
-        Pull publisher / pages / publication date / language from detail rows
-        and JSON-LD when available.
+        Pull publisher / pages / publication date / language for PL Assignment.
+
+        Priority observed via Inspect Element / page source:
+        1) __NEXT_DATA__ Apollo Book details (publisher is here as a string)
+        2) JSON-LD Book/Product
+        3) Visible publication text
         """
         details: dict[str, str] = {}
 
-        # JSON-LD Book object often has reliable structured fields.
+        # 1) Apollo state inside __NEXT_DATA__ (most reliable for publisher).
+        # Example inspected fragment:
+        #   "publisher":"Penguin Press","isbn":"159420571X","isbn13":"9781594205712"
+        script = soup.find("script", id="__NEXT_DATA__")
+        if isinstance(script, Tag) and script.string:
+            try:
+                next_data = json.loads(script.string)
+                apollo = (
+                    next_data.get("props", {})
+                    .get("pageProps", {})
+                    .get("apolloState", {})
+                )
+                if isinstance(apollo, dict):
+                    # Prefer the Book node that actually has details.publisher.
+                    book_nodes = [
+                        value
+                        for key, value in apollo.items()
+                        if isinstance(key, str)
+                        and key.startswith("Book:")
+                        and isinstance(value, dict)
+                        and value.get("title")
+                    ]
+                    book_nodes.sort(
+                        key=lambda node: 0
+                        if isinstance(node.get("details"), dict)
+                        and (node.get("details") or {}).get("publisher")
+                        else 1
+                    )
+                    for value in book_nodes:
+                        book_details = value.get("details") or {}
+                        if isinstance(book_details, dict):
+                            if book_details.get("publisher"):
+                                details["publisher"] = str(book_details["publisher"])
+                            if book_details.get("numPages") is not None:
+                                details["pages"] = str(book_details["numPages"])
+                            lang = book_details.get("language")
+                            if isinstance(lang, dict) and lang.get("name"):
+                                details["language"] = str(lang["name"])
+                            elif isinstance(lang, str) and lang:
+                                details["language"] = lang
+                            pub_time = book_details.get("publicationTime")
+                            if pub_time and "publication_date" not in details:
+                                try:
+                                    import time as _time
+
+                                    details["publication_date"] = _time.strftime(
+                                        "%Y-%m-%d",
+                                        _time.gmtime(float(pub_time) / 1000.0),
+                                    )
+                                except (TypeError, ValueError, OSError):
+                                    pass
+                        if value.get("publisher"):
+                            details.setdefault("publisher", str(value["publisher"]))
+                        if details.get("publisher"):
+                            break
+            except (TypeError, json.JSONDecodeError):
+                pass
+
+        # Regex fallback: Apollo often embeds "publisher":"Penguin Press"
+        if "publisher" not in details and script and script.string:
+            pub_match = re.search(
+                r'"publisher"\s*:\s*"([^"]{2,120})"',
+                script.string,
+            )
+            if pub_match:
+                candidate = pub_match.group(1).strip()
+                if candidate.lower() not in {"book", "null", "none"}:
+                    details["publisher"] = candidate
+
+        # 2) JSON-LD Book object
         for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
             try:
                 payload = json.loads(script.string or "")
@@ -268,34 +412,50 @@ class GoodreadsScraper(BaseScraper):
                     continue
                 if item.get("@type") not in {"Book", "Product"}:
                     continue
-                if item.get("publisher"):
+                if item.get("publisher") and "publisher" not in details:
                     pub = item["publisher"]
                     if isinstance(pub, dict):
                         details["publisher"] = str(pub.get("name", ""))
                     else:
                         details["publisher"] = str(pub)
                 if item.get("datePublished"):
-                    details["publication_date"] = str(item["datePublished"])
+                    details.setdefault("publication_date", str(item["datePublished"]))
                 if item.get("inLanguage"):
-                    details["language"] = str(item["inLanguage"])
+                    details.setdefault("language", str(item["inLanguage"]))
                 if item.get("numberOfPages"):
-                    details["pages"] = str(item["numberOfPages"])
+                    details.setdefault("pages", str(item["numberOfPages"]))
                 if item.get("bookFormat"):
-                    details["format"] = str(item["bookFormat"])
+                    details.setdefault("format", str(item["bookFormat"]))
+                # Some Product schemas expose country via offers / brand country.
+                country = item.get("countryOfOrigin") or item.get("contentLocation")
+                if isinstance(country, dict) and country.get("name"):
+                    details["origin_country"] = str(country["name"])
+                elif isinstance(country, str) and country:
+                    details["origin_country"] = country
 
-        # Visible "pages" / "Published" style text blocks
+        # 3) Visible "pages" / "Published" style text blocks
         page_text = soup.get_text("\n", strip=True)
         pages_match = re.search(r"(\d+)\s*pages", page_text, flags=re.I)
         if pages_match and "pages" not in details:
             details["pages"] = pages_match.group(1)
 
         published_match = re.search(
-            r"Published\s+([A-Za-z]+\s+\d{1,2},?\s+\d{4}|\d{4})",
+            r"(?:First published|Published)\s+([A-Za-z]+\s+\d{1,2},?\s+\d{4}|\d{4})",
             page_text,
             flags=re.I,
         )
         if published_match and "publication_date" not in details:
             details["publication_date"] = published_match.group(1)
+
+        # Rare visible publisher line near edition details.
+        if "publisher" not in details:
+            pub_match = re.search(
+                r"(?:Publisher|Published by)\s*[:\-]?\s*([A-Za-z0-9][^\n|]{2,80})",
+                page_text,
+                flags=re.I,
+            )
+            if pub_match:
+                details["publisher"] = pub_match.group(1).strip()
 
         return details
 
@@ -306,6 +466,8 @@ class GoodreadsScraper(BaseScraper):
             ".BookCover__image img",
             "#coverImage",
             "img.ResponsiveImage",
+            'img[src*="images.gr-assets.com"]',
+            'img[src*="i.gr-assets.com"]',
         ]
         for selector in selectors:
             for img in soup.select(selector):
@@ -314,6 +476,11 @@ class GoodreadsScraper(BaseScraper):
                     urls.append(str(src))
             if urls:
                 break
+        if not urls:
+            for meta in soup.select('meta[property="og:image"], meta[name="og:image"]'):
+                content = str(meta.get("content") or "").strip()
+                if content.startswith("http"):
+                    urls.append(content)
         return self.unique_non_empty(urls)
 
     def _extract_reviews_from_soup(self, soup: BeautifulSoup) -> list[str]:
