@@ -1,0 +1,1 @@
+After jumping around the chapters a bit, I decided that there's not much value in me learning about the syntax of C at this point in my programming self-education, and the logical concepts introduced here are things I already know. I didn't rate the book because it is probably a lovely enough introduction, but just not a value add for me.

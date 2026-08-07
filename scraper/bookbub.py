@@ -20,7 +20,8 @@ import config
 from scraper.base import BaseScraper, ScrapedBook
 from utils.isbn import isbn13_to_isbn10
 from utils.title_match import (
-    listing_matches_hints,
+    ambiguous_match_detail,
+    classify_title_match,
     note_title_match,
     significant_title_tokens,
 )
@@ -55,17 +56,24 @@ class BookBubScraper(BaseScraper):
         *,
         hint_title: str = "",
         hint_authors: str = "",
+        hint_titles: list[str] | None = None,
+        allow_author_query: bool = False,
     ) -> ScrapedBook:
         """
-        Search BookBub by ISBN, then by title/author when ISBN search fails.
+        Search BookBub by ISBN, then Goodreads/Amazon title variants + slugs.
 
-        Soft-fails when:
-          - search is geo-blocked / 404
-          - Cloudflare blocks Level-1/2
-          - no book result is found
+        When GR+Amazon confirm, also try title+author search queries.
         """
+        from utils.title_match import build_title_query_variants
+
         result = ScrapedBook(source=self.source_name, isbn13=isbn13)
         result.fields = self._empty_fields(isbn13)
+
+        titles = list(hint_titles or [])
+        if hint_title and hint_title not in titles:
+            titles = build_title_query_variants(hint_title, *titles)
+        titles = titles or build_title_query_variants(hint_title)
+        primary = titles[0] if titles else hint_title
 
         product_urls, discovery_note = self._resolve_product_urls_from_searches(
             self.build_candidate_urls(isbn13)
@@ -74,21 +82,26 @@ class BookBubScraper(BaseScraper):
         if not product_urls:
             # Prefer guessed /books/<slug> URLs first: BookBub /search is often
             # geo-blocked and can return truncated junk links like /books/everything.
-            direct_books = [
-                f"https://www.bookbub.com/books/{slug}"
-                for slug in self._title_author_slugs(hint_title, hint_authors)
-            ]
-            search_urls = self._build_title_search_urls(hint_title, hint_authors)
+            direct_books: list[str] = []
+            for title in titles or [hint_title]:
+                for slug in self._title_author_slugs(title, hint_authors):
+                    direct_books.append(f"https://www.bookbub.com/books/{slug}")
+            direct_books = self.unique_non_empty(direct_books)
+
+            search_urls = self._build_title_search_urls(
+                titles,
+                authors=hint_authors if allow_author_query else "",
+            )
             search_urls = [u for u in search_urls if "/books/" not in u]
             if direct_books:
                 product_urls = direct_books
-                discovery_note = "Tried BookBub /books/<slug> from title+author."
+                discovery_note = "Tried BookBub /books/<slug> from GR/Amazon titles."
                 used_title_fallback = True
             if search_urls:
                 searched, title_note = self._resolve_product_urls_from_searches(
                     search_urls
                 )
-                searched = self._filter_book_urls_for_title(searched, hint_title)
+                searched = self._filter_book_urls_for_title(searched, primary)
                 if searched:
                     # Keep slug guesses first, then filtered search hits.
                     product_urls = self.unique_non_empty(product_urls + searched)
@@ -105,6 +118,7 @@ class BookBubScraper(BaseScraper):
             )
             return result
 
+        ambiguous_notes: list[str] = []
         for product_url in product_urls:
             for method, fetcher in (
                 ("requests+bs4", self.fetch_html_requests),
@@ -121,38 +135,73 @@ class BookBubScraper(BaseScraper):
                 )
                 if not self.is_parse_useful(parsed):
                     continue
-                if used_title_fallback and not listing_matches_hints(
-                    hint_title=hint_title,
-                    hint_authors=hint_authors,
-                    found_title=str(parsed.fields.get("title", "")),
-                    found_authors=str(parsed.fields.get("authors", "")),
-                ):
-                    continue
+                if used_title_fallback:
+                    decision = classify_title_match(
+                        hint_title=primary,
+                        hint_authors=hint_authors,
+                        found_title=str(parsed.fields.get("title", "")),
+                        found_authors=str(parsed.fields.get("authors", "")),
+                    )
+                    if decision == "ambiguous":
+                        ambiguous_notes.append(
+                            ambiguous_match_detail(
+                                hint_title=primary,
+                                found_title=str(parsed.fields.get("title", "")),
+                            )
+                        )
+                        continue
+                    if decision != "accept":
+                        continue
                 parsed.method_used = method
                 parsed.success = True
                 if used_title_fallback:
                     note_title_match(parsed.fields)
                 return parsed
 
+        if ambiguous_notes:
+            result.error = (
+                f"BookBub: AMBIGUOUS_TITLE_MATCH for ISBN {isbn13}. "
+                + " | ".join(ambiguous_notes[:3])
+            )
+            return result
+
         result.error = f"BookBub: could not fetch book data for ISBN {isbn13}."
         return result
 
-    def _build_title_search_urls(self, title: str, authors: str) -> list[str]:
-        title = (title or "").strip()
-        if not title or title == config.MISSING_VALUE:
-            return []
+    def _build_title_search_urls(
+        self,
+        titles: list[str] | str,
+        *,
+        authors: str = "",
+    ) -> list[str]:
+        """Build BookBub search URLs from title variants (+ optional author)."""
+        from utils.title_match import clean_hint_title
+
+        if isinstance(titles, str):
+            titles = [titles]
         authors = (authors or "").strip()
         if authors == config.MISSING_VALUE:
             authors = ""
-        query = quote(f"{title} {authors}".strip())
-        urls = [
-            f"https://www.bookbub.com/search?search={query}",
-            f"https://www.bookbub.com/search?q={query}",
-        ]
-        # When /search is geo-blocked, BookBub book pages often still work via slug:
-        #   /books/everything-i-never-told-you-by-celeste-ng
-        for slug in self._title_author_slugs(title, authors):
-            urls.append(f"https://www.bookbub.com/books/{slug}")
+        primary_author = authors.split(",")[0].strip() if authors else ""
+
+        queries: list[str] = []
+        for title in titles:
+            title = clean_hint_title(title) or (title or "").strip()
+            if not title or title == config.MISSING_VALUE:
+                continue
+            queries.append(title)
+            if primary_author:
+                queries.append(f"{title} {primary_author}")
+
+        urls: list[str] = []
+        for query in self.unique_non_empty(queries):
+            encoded = quote(query)
+            urls.extend(
+                [
+                    f"https://www.bookbub.com/search?search={encoded}",
+                    f"https://www.bookbub.com/search?q={encoded}",
+                ]
+            )
         return urls
 
     @staticmethod
@@ -320,6 +369,21 @@ class BookBubScraper(BaseScraper):
         }:
             result.fields["description"] = self.text_or_na(blurb)
 
+        # Inspect Element: div[data-book-json] carries title/authors/cover/desc/date/tags.
+        bj_fields, bj_covers, bj_blurb = self._extract_from_data_book_json(soup)
+        for key, value in bj_fields.items():
+            if key in result.fields and value:
+                if result.fields.get(key) in {config.MISSING_VALUE, "", None}:
+                    result.fields[key] = self.text_or_na(value)
+        if bj_covers:
+            result.cover_urls = self.unique_non_empty(result.cover_urls + bj_covers)
+        if bj_blurb and (
+            not result.blurb or result.blurb == config.MISSING_VALUE
+        ):
+            result.blurb = bj_blurb
+            if result.fields.get("description") in {config.MISSING_VALUE, "", None}:
+                result.fields["description"] = self.text_or_na(bj_blurb)
+
         if result.fields.get("title") in {config.MISSING_VALUE, None, ""}:
             result.fields["title"] = self._extract_title_html(soup)
         if result.fields.get("authors") in {config.MISSING_VALUE, None, ""}:
@@ -459,6 +523,104 @@ class BookBubScraper(BaseScraper):
     # ------------------------------------------------------------------
     # Extractors
     # ------------------------------------------------------------------
+    def _extract_from_data_book_json(
+        self, soup: BeautifulSoup
+    ) -> tuple[dict[str, str], list[str], str]:
+        """
+        Parse BookBub's div[data-book-json] payload (from Inspect Element).
+
+        Typical keys: title, authors, coverUrl, description, releaseDate,
+        averageRating, ratingsCount, tags, dealsCategories, url.
+        """
+        fields: dict[str, str] = {}
+        covers: list[str] = []
+        blurb = ""
+
+        node = soup.select_one("div[data-book-json]")
+        if not isinstance(node, Tag):
+            return fields, covers, blurb
+
+        raw = node.get("data-book-json")
+        if not raw:
+            return fields, covers, blurb
+
+        try:
+            # BeautifulSoup already unescapes HTML entities in attributes.
+            data = json.loads(str(raw))
+        except (TypeError, json.JSONDecodeError):
+            try:
+                data = json.loads(unescape(str(raw)))
+            except (TypeError, json.JSONDecodeError):
+                return fields, covers, blurb
+
+        if not isinstance(data, dict):
+            return fields, covers, blurb
+
+        if data.get("title"):
+            fields["title"] = str(data["title"]).strip()
+        if data.get("authors"):
+            fields["authors"] = str(data["authors"]).strip()
+        if data.get("coverUrl") and str(data["coverUrl"]).startswith("http"):
+            covers.append(str(data["coverUrl"]))
+        if data.get("description"):
+            blurb = self._strip_html(str(data["description"]))
+            fields["description"] = blurb
+        # Date keys vary by BookBub payload version.
+        for date_key in ("releaseDate", "publishedDate", "datePublished", "blurbDate"):
+            if data.get(date_key):
+                fields["publication_date"] = str(data[date_key])[:32]
+                break
+        if data.get("averageRating") is not None:
+            try:
+                fields["rating"] = f"{float(data['averageRating']):.2f}"
+            except (TypeError, ValueError):
+                fields["rating"] = str(data["averageRating"])
+        if data.get("ratingsCount") is not None:
+            fields["ratings_count"] = str(data["ratingsCount"])
+        if data.get("url"):
+            fields["url"] = str(data["url"])
+        if data.get("pageCount") is not None:
+            try:
+                pages = int(data["pageCount"])
+                if pages > 0:
+                    fields["pages"] = str(pages)
+            except (TypeError, ValueError):
+                pass
+        # Prefer deal/new-release price, then retail.
+        for price_key in ("dealPrice", "newReleasePrice", "retailPrice", "previousDealPrice"):
+            price_val = data.get(price_key)
+            if price_val is None or price_val == "":
+                continue
+            try:
+                fields["price"] = f"${float(price_val):.2f}"
+            except (TypeError, ValueError):
+                fields["price"] = str(price_val)
+            break
+
+        genre_bits: list[str] = []
+        for key in ("tags", "dealsCategories", "categories"):
+            value = data.get(key)
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        # Inspect Element uses displayName (not always "name").
+                        label = (
+                            item.get("displayName")
+                            or item.get("name")
+                            or item.get("seoName")
+                            or ""
+                        )
+                        if label:
+                            genre_bits.append(str(label))
+                    elif isinstance(item, str) and item.strip():
+                        genre_bits.append(item.strip())
+            elif isinstance(value, str) and value.strip():
+                genre_bits.append(value.strip())
+        if genre_bits:
+            fields["genres"] = ", ".join(self.unique_non_empty(genre_bits)[:10])
+
+        return fields, self.unique_non_empty(covers), blurb
+
     def _extract_from_json_ld(
         self, soup: BeautifulSoup
     ) -> tuple[dict[str, str], list[str], list[str], str]:

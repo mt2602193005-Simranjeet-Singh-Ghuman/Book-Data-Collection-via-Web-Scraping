@@ -536,10 +536,14 @@ class AmazonScraper(BaseScraper):
 
     def _extract_description(self, soup: BeautifulSoup) -> str:
         selectors = [
+            "#bookDescription_feature_div noscript",
+            "#bookDescription_feature_div .a-expander-content",
             "#bookDescription_feature_div",
+            "#productDescription p",
             "#productDescription",
             "#bookDesc_iframe_wrapper",
             "div[data-feature-name='bookDescription']",
+            "#editorialReviews_feature_div",
             "#feature-bullets",
         ]
         for selector in selectors:
@@ -547,6 +551,8 @@ class AmazonScraper(BaseScraper):
             if not node:
                 continue
             text = node.get_text("\n", strip=True)
+            # Drop Amazon UI chrome that sometimes lands in the expander.
+            text = re.sub(r"\bRead more\b", "", text, flags=re.I).strip()
             if text and len(text) > 40:
                 return self.text_or_na(text)
         return config.MISSING_VALUE
@@ -586,18 +592,34 @@ class AmazonScraper(BaseScraper):
 
     def _extract_price(self, soup: BeautifulSoup) -> str:
         selectors = [
+            "#price_inside_buybox",
+            "#newBuyBoxPrice .a-offscreen",
+            "#priceblock_ourprice",
+            "#priceblock_dealprice",
+            "span.a-price.aok-align-center .a-offscreen",
             "span.a-price .a-offscreen",
             "#price",
-            "#price_inside_buybox",
             ".kindle-price .a-color-price",
             "#kindle-price",
+            "#tmmSwatches .a-button-selected .a-color-price",
+            "#tmmSwatches .slot-price .a-color-base",
+            ".a-color-price.header-price",
         ]
         for selector in selectors:
             node = soup.select_one(selector)
-            if node:
-                text = node.get_text(" ", strip=True)
-                if text:
-                    return self.text_or_na(text)
+            if not node:
+                continue
+            text = node.get_text(" ", strip=True)
+            # Prefer values that look like money.
+            if text and re.search(r"[\d]", text) and re.search(r"[₹$€£]|INR|USD|Rs", text, re.I):
+                return self.text_or_na(text)
+            if text and re.search(r"^\s*[\d,.]+$", text):
+                return self.text_or_na(text)
+        # Fallback: first offscreen price that isn't a shipping fee.
+        for node in soup.select("span.a-price .a-offscreen"):
+            text = node.get_text(" ", strip=True)
+            if text and re.search(r"[\d]", text) and "free" not in text.lower():
+                return self.text_or_na(text)
         return config.MISSING_VALUE
 
     @staticmethod
@@ -733,10 +755,56 @@ class AmazonScraper(BaseScraper):
             elif "edition" in key_l:
                 details["edition"] = value
 
-        # Best-sellers rank / format clues from title badges
-        format_node = soup.select_one("#productSubtitle, #binding")
-        if format_node and "format" not in details:
-            details["format"] = format_node.get_text(" ", strip=True)
+        # Format clues: subtitle badge, binding, selected twister / TMM swatch.
+        if "format" not in details:
+            for selector in (
+                "#productSubtitle",
+                "#binding",
+                "#tmmSwatches .a-button-selected .a-button-text",
+                "#tmmSwatches .swatchElement.selected .a-button-text",
+                "#formats .a-button-selected .a-button-text",
+                "span.a-size-medium.a-color-secondary",
+            ):
+                format_node = soup.select_one(selector)
+                if not format_node:
+                    continue
+                text = self._clean_amazon_label(format_node.get_text(" ", strip=True))
+                if not text:
+                    continue
+                # Normalize noisy twister labels like
+                # "Kindle INR 855.81 Available instantly" -> "Kindle".
+                binding_match = re.search(
+                    r"\b(Kindle|Paperback|Hardcover|Audiobook|Board book|"
+                    r"Mass Market Paperback|Spiral-bound|Loose Leaf)\b",
+                    text,
+                    flags=re.I,
+                )
+                if binding_match:
+                    details["format"] = binding_match.group(1).title().replace("Kindle", "Kindle")
+                    if details["format"].lower() == "kindle":
+                        details["format"] = "Kindle"
+                    break
+                # Keep short binding labels; drop long marketing strings.
+                if len(text) <= 40 and re.search(
+                    r"paperback|hardcover|kindle|audiobook|board book|mass market|spiral",
+                    text,
+                    flags=re.I,
+                ):
+                    details["format"] = text
+                    break
+                if selector in {"#productSubtitle", "#binding"} and len(text) <= 40:
+                    details["format"] = text
+                    break
+
+        # Series from title parentheses when detail bullets omit it, e.g.
+        # "The Golden Torc (Saga of the Exiles Book 2)".
+        if "series" not in details:
+            title_node = soup.select_one("#productTitle")
+            if title_node:
+                title_text = title_node.get_text(" ", strip=True)
+                series_match = re.search(r"\(([^)]*(?:Book|Series|Vol)[^)]*)\)", title_text, flags=re.I)
+                if series_match:
+                    details["series"] = series_match.group(1).strip()
 
         return details
 

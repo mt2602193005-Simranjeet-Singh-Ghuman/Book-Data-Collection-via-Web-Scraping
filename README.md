@@ -18,11 +18,11 @@ There is no website UI, no Flask/Django, and no database. Everything runs in the
 
 ## What it does
 
-1. Takes **one ISBN** typed in, or a **CSV** of ISBNs (you choose how many: a number, or `all`).  
+1. Takes **one ISBN**, **first N CSV rows**, an **inclusive CSV range**, or the **entire CSV**.  
 2. Checks / converts ISBN-10 → ISBN-13.  
-3. If an ISBN was scraped earlier, asks whether to scrape again or skip.  
-4. Scrapes each site (tries `requests` + BeautifulSoup first; uses Playwright only if the page needs it).  
-5. After Amazon/Goodreads succeed, Kobo/Audible/BookBub can fall back to title search when the print ISBN is missing.  
+3. Always refreshes existing ISBNs (merge keeps good values; N/A never wipes prior data).  
+4. Scrapes Goodreads first (canonical title), then Amazon, then Kobo/Audible/BookBub.  
+5. Kobo / Audible / BookBub search by **Goodreads title only**; author is secondary validation. Ambiguous matches are logged as `AMBIGUOUS_TITLE_MATCH` (wrong book is not saved).  
 6. Writes JSON, cover images, blurbs, reviews, and a preprocessing CSV log.  
 7. Shows progress like `04/20` after each ISBN finishes.  
 8. If one site or field fails, it stores `N/A`, logs the issue, and moves on.
@@ -44,8 +44,11 @@ Project/
 │   │   ├── BookBub/bookbub metadata.json
 │   │   └── Goodreads/goodreads metadata.json
 │   ├── Cover_Page/
+│   │   ├── Amazon_Cover/ … Goodreads_Cover/
 │   ├── Blurb/
+│   │   ├── Amazon_Blurb/ … Goodreads_Blurb/
 │   ├── Reviews/
+│   │   ├── Amazon_Reviews/ … Goodreads_Reviews/
 │   └── Preprocessing/          # CSV problem log
 ├── scraper/                    # one module per website + shared base
 ├── utils/                      # ISBN helpers, JSON I/O, file saving
@@ -64,9 +67,9 @@ Folders under `output/` are created automatically when you run the program.
 | Type | Pattern | Example |
 |------|---------|---------|
 | Site JSON | `<source> metadata.json` | `goodreads metadata.json` |
-| Cover | `<isbn13>_cp_<source>_<n>.jpg` | `9780143127550_cp_goodreads_1.jpg` |
-| Blurb | `<isbn13>_b_<source>_<n>.txt` | `9780143127550_b_goodreads_1.txt` |
-| Review | `<isbn13>_r_<source>_<n>.txt` | `9780143127550_r_goodreads_1.txt` |
+| Cover | `<isbn13>_c_<Source>_<n>.jpg` | `9780143127550_c_Goodreads_1.jpg` |
+| Blurb | `<isbn13>_b_<Source>_<n>.txt` | `9780143127550_b_Goodreads_1.txt` |
+| Review | `<isbn13>_r_<Source>_<n>.txt` | `9780143127550_r_Goodreads_1.txt` (one file per review) |
 
 Genres stay inside the JSON (comma-separated). There is no separate genres folder.
 
@@ -98,7 +101,6 @@ Place ISBN CSV files in `input/`.
 
 | File | Purpose |
 |------|---------|
-| `input/sample_isbns.csv` | Small demo list (5 ISBNs) |
 | `input/2602193005.csv` | Full class CSV (~10k rows, header `Isbn-13`) |
 
 ---
@@ -113,11 +115,14 @@ python main.py
 
 Menu:
 
-1. Enter one ISBN manually (start here)  
-2. Load ISBNs from CSV  
+1. Single ISBN (manual entry)  
+2. First N ISBNs from CSV  
+3. Inclusive CSV range (start–end, 1-based data rows)  
+4. Entire CSV  
+5. Refresh already-scraped ISBNs in `master.json`  
 0. Exit  
 
-For option **2**, you will be asked how many ISBNs to take:
+For options **2–4**, you will be asked for the CSV path. For **2** you choose N; for **3** you enter inclusive start/end. Example for option **2**:
 
 | You type | Meaning |
 |----------|---------|

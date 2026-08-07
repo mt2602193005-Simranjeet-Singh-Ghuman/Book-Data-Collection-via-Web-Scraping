@@ -1,0 +1,1 @@
+This is a great book, but it's not C85 or later - it's Ken and Ritchie C, so it doesn't compile in most modern C compilers like GNU C or Clang. It usually compiles in a C++ compiler, but pointers work very differently between the two languages.

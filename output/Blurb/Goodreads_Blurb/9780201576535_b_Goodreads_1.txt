@@ -1,0 +1,1 @@
+Based on the popular Koffman style and self-teaching techniques, this new book teaches ANSI C to programmers who need an easy-to-understand introduction to the language. Using style standards that are adopted by major industrial C users, the authors convey the fundamentals of the C language without confusing programmers by introducing complicated advanced material.

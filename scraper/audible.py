@@ -18,7 +18,13 @@ from bs4 import BeautifulSoup, Tag
 import config
 from scraper.base import BaseScraper, ScrapedBook
 from utils.isbn import isbn13_to_isbn10
-from utils.title_match import listing_matches_hints, note_title_match
+from utils.title_match import (
+    ambiguous_match_detail,
+    authors_roughly_match,
+    classify_title_match,
+    note_title_match,
+    title_match_score,
+)
 
 
 class AudibleScraper(BaseScraper):
@@ -52,48 +58,68 @@ class AudibleScraper(BaseScraper):
         *,
         hint_title: str = "",
         hint_authors: str = "",
+        hint_titles: list[str] | None = None,
+        allow_author_query: bool = False,
     ) -> ScrapedBook:
         """
-        Search Audible by ISBN, then by title/author if the print ISBN misses.
+        Search Audible by ISBN, then by Goodreads/Amazon title variants.
 
-        Soft-fail when neither ISBN nor title finds an audiobook listing.
+        When GR+Amazon confirm (allow_author_query=True), also search title+author.
+        Author is always used for validation / ranking.
         """
+        from utils.title_match import build_title_query_variants
+
         result = ScrapedBook(source=self.source_name, isbn13=isbn13)
         result.fields = self._empty_fields(isbn13)
 
+        titles = list(hint_titles or [])
+        if hint_title and hint_title not in titles:
+            titles = build_title_query_variants(hint_title, *titles)
+        titles = titles or build_title_query_variants(hint_title)
+        primary = titles[0] if titles else hint_title
+
         # If another site already found title/authors, require a real title match
         # so Audible does not accept a loosely related classic (e.g. ward vs world).
-        has_hints = bool(
-            (hint_title or "").strip()
-            and hint_title.strip() != config.MISSING_VALUE
-        )
+        has_hints = bool(primary and primary != config.MISSING_VALUE)
 
         product_urls = self._resolve_product_urls_from_searches(
             self.build_candidate_urls(isbn13)
         )
-        hit = self._try_product_urls(
+        hit, ambiguous_notes = self._try_product_urls(
             isbn13,
             product_urls,
             require_hint_match=has_hints,
-            hint_title=hint_title,
+            hint_title=primary,
             hint_authors=hint_authors,
         )
         if hit is not None:
             return hit
 
-        title_search = self._build_title_search_urls(hint_title, hint_authors)
+        title_search = self._build_title_search_urls(
+            titles,
+            authors=hint_authors if allow_author_query else "",
+        )
         if title_search:
             title_product_urls = self._resolve_product_urls_from_searches(title_search)
-            hit = self._try_product_urls(
+            hit, more_ambiguous = self._try_product_urls(
                 isbn13,
                 title_product_urls,
                 require_hint_match=True,
-                hint_title=hint_title,
+                hint_title=primary,
                 hint_authors=hint_authors,
+                rank_best=True,
             )
+            ambiguous_notes.extend(more_ambiguous)
             if hit is not None:
                 note_title_match(hit.fields)
                 return hit
+
+        if ambiguous_notes:
+            result.error = (
+                f"Audible: AMBIGUOUS_TITLE_MATCH for ISBN {isbn13}. "
+                + " | ".join(ambiguous_notes[:3])
+            )
+            return result
 
         result.error = f"Audible: could not fetch book data for ISBN {isbn13}."
         return result
@@ -106,9 +132,18 @@ class AudibleScraper(BaseScraper):
         require_hint_match: bool,
         hint_title: str,
         hint_authors: str,
-    ) -> Optional[ScrapedBook]:
-        """Fetch and parse product URLs until one listing is usable."""
-        for product_url in product_urls:
+        rank_best: bool = False,
+    ) -> tuple[Optional[ScrapedBook], list[str]]:
+        """
+        Fetch and parse product URLs.
+
+        When rank_best=True (title discovery), score accepted candidates and
+        prefer exact title + matching author over the first loose hit.
+        """
+        ambiguous_notes: list[str] = []
+        accepted: list[tuple[float, ScrapedBook]] = []
+
+        for product_url in product_urls[:8]:
             for method, fetcher in (
                 ("requests+bs4", self.fetch_html_requests),
                 ("playwright", self.fetch_html_playwright),
@@ -121,38 +156,78 @@ class AudibleScraper(BaseScraper):
                 parsed = self.parse_book_page(soup, page_url=product_url, isbn13=isbn13)
                 if not self.is_parse_useful(parsed):
                     continue
-                if require_hint_match and not listing_matches_hints(
-                    hint_title=hint_title,
-                    hint_authors=hint_authors,
-                    found_title=str(parsed.fields.get("title", "")),
-                    found_authors=str(parsed.fields.get("authors", "")),
-                ):
-                    continue
+                found_title = str(parsed.fields.get("title", ""))
+                found_authors = str(parsed.fields.get("authors", ""))
+                if require_hint_match:
+                    decision = classify_title_match(
+                        hint_title=hint_title,
+                        hint_authors=hint_authors,
+                        found_title=found_title,
+                        found_authors=found_authors,
+                    )
+                    if decision == "ambiguous":
+                        ambiguous_notes.append(
+                            ambiguous_match_detail(
+                                hint_title=hint_title,
+                                found_title=found_title,
+                            )
+                        )
+                        continue
+                    if decision != "accept":
+                        continue
                 parsed.method_used = method
                 parsed.success = True
-                return self._enrich_reviews_if_needed(parsed)
-        return None
+                enriched = self._enrich_reviews_if_needed(parsed)
+                if not rank_best:
+                    return enriched, ambiguous_notes
+                score = title_match_score(hint_title, found_title)
+                if authors_roughly_match(hint_authors, found_authors):
+                    score += 0.25
+                accepted.append((score, enriched))
+                break  # next product URL
 
-    def _build_title_search_urls(self, title: str, authors: str) -> list[str]:
+        if accepted:
+            accepted.sort(key=lambda item: item[0], reverse=True)
+            return accepted[0][1], ambiguous_notes
+        return None, ambiguous_notes
+
+    def _build_title_search_urls(
+        self,
+        titles: list[str] | str,
+        *,
+        authors: str = "",
+    ) -> list[str]:
+        """Build Audible search URLs from title variants (+ optional author)."""
         from utils.title_match import clean_hint_title
 
-        title = clean_hint_title(title) or (title or "").strip()
-        if not title or title == config.MISSING_VALUE:
-            return []
+        if isinstance(titles, str):
+            titles = [titles]
         authors = (authors or "").strip()
         if authors == config.MISSING_VALUE:
             authors = ""
-        queries = [f"{title} {authors}".strip(), title]
-        urls: list[str] = []
-        for query in queries:
-            if not query:
+        primary_author = authors.split(",")[0].strip() if authors else ""
+
+        queries: list[str] = []
+        for title in titles:
+            title = clean_hint_title(title) or (title or "").strip()
+            if not title or title == config.MISSING_VALUE:
                 continue
+            queries.append(title)
+            if primary_author:
+                queries.append(f"{title} {primary_author}")
+
+        urls: list[str] = []
+        for query in self.unique_non_empty(queries):
             encoded = quote(query)
-            urls.append(
-                "https://www.audible.com/search?"
-                f"keywords={encoded}&ipRedirectOverride=true&overrideBaseCountry=true"
+            urls.extend(
+                [
+                    (
+                        "https://www.audible.com/search?"
+                        f"keywords={encoded}&ipRedirectOverride=true&overrideBaseCountry=true"
+                    ),
+                    f"https://www.audible.in/search?keywords={encoded}",
+                ]
             )
-            urls.append(f"https://www.audible.in/search?keywords={encoded}")
         return self.unique_non_empty(urls)
 
     def is_parse_useful(self, parsed: ScrapedBook) -> bool:
@@ -360,7 +435,8 @@ class AudibleScraper(BaseScraper):
             soup = self.make_soup(html)
             for href in self._extract_pd_links(soup, base_url=final_url):
                 found.append(href)
-            if found:
+            # Keep scanning storefronts until we have several candidates to rank.
+            if len(self.unique_non_empty(found)) >= 5:
                 break
         return self.unique_non_empty(found)
 

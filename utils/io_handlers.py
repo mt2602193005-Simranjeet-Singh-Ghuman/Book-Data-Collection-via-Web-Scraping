@@ -13,13 +13,47 @@ Rules we stick to:
 from __future__ import annotations
 
 import json
+import os
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import config
 
 
 JsonDict = dict[str, Any]
+
+
+def _atomic_write_text(path: Path, text: str, *, retries: int = 6) -> None:
+    """
+    Write text safely on Windows (avoids Errno 22 from locked/partial overwrites).
+
+    Writes to a sibling .tmp file, then replaces the destination. Retries briefly
+    if antivirus / Explorer briefly locks the file during large batch runs.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    last_error: OSError | None = None
+    for attempt in range(retries):
+        try:
+            tmp_path.write_text(text, encoding="utf-8", newline="\n")
+            os.replace(tmp_path, path)
+            return
+        except OSError as exc:
+            last_error = exc
+            time.sleep(0.15 * (attempt + 1))
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
+    # Final fallback: direct write (still better than crashing the whole batch).
+    try:
+        path.write_text(text, encoding="utf-8", newline="\n")
+    except OSError:
+        if last_error is not None:
+            raise last_error
+        raise
 
 
 def empty_source_record(isbn13: str, source: str) -> JsonDict:
@@ -107,9 +141,8 @@ def load_json_file(path: Path) -> JsonDict:
 
 def save_json_file(path: Path, data: JsonDict) -> None:
     """Write a JSON object with UTF-8 encoding and indent=2."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(data, indent=2, ensure_ascii=False)
-    path.write_text(text + "\n", encoding="utf-8")
+    text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    _atomic_write_text(path, text)
 
 
 ISBN_BLOCK_SEPARATOR: str = "------------------"
@@ -182,9 +215,7 @@ def load_master_json() -> JsonDict:
 
 def save_master_json(data: JsonDict) -> None:
     """Save master.json with ------------------ between each ISBN record."""
-    path = config.MASTER_JSON_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_dump_json_with_isbn_gaps(data), encoding="utf-8")
+    _atomic_write_text(config.MASTER_JSON_PATH, _dump_json_with_isbn_gaps(data))
 
 
 def isbn_already_scraped(isbn13: str) -> bool:
@@ -220,37 +251,64 @@ def save_source_json(source: str, data: JsonDict) -> None:
     save_json_file(config.source_json_path(source), data)
 
 
+def _ensure_isbn_in_master(master: JsonDict, isbn13: str) -> bool:
+    """Insert/repair one ISBN skeleton in an in-memory master dict. True if changed."""
+    changed = False
+    if isbn13 not in master:
+        master[isbn13] = empty_master_isbn_record(isbn13)
+        return True
+    master_record = master[isbn13]
+    if not isinstance(master_record, dict):
+        master[isbn13] = empty_master_isbn_record(isbn13)
+        return True
+    if master_record.get("isbn13") != isbn13:
+        master_record["isbn13"] = isbn13
+        changed = True
+    for source in config.SOURCES:
+        if source not in master_record:
+            master_record[source] = empty_source_record(isbn13, source)
+            changed = True
+    return changed
+
+
+def ensure_isbn_placeholders_batch(isbn13_list: Iterable[str]) -> None:
+    """
+    Create N/A skeletons for many ISBNs with one load/save cycle per file.
+
+    Important for large CSV ranges (e.g. 1–1000): the old per-ISBN save loop
+    rewrote master.json thousands of times and crashed Windows with Errno 22.
+    """
+    isbn13_list = [str(x).strip() for x in isbn13_list if str(x).strip()]
+    if not isbn13_list:
+        return
+
+    master = load_master_json()
+    master_changed = False
+    for isbn13 in isbn13_list:
+        if _ensure_isbn_in_master(master, isbn13):
+            master_changed = True
+    if master_changed:
+        save_master_json(master)
+
+    for source in config.SOURCES:
+        source_data = load_source_json(source)
+        source_changed = False
+        for isbn13 in isbn13_list:
+            if isbn13 not in source_data:
+                source_data[isbn13] = empty_source_record(isbn13, source)
+                source_changed = True
+        if source_changed:
+            save_source_json(source, source_data)
+
+
 def ensure_isbn_placeholders(isbn13: str) -> None:
     """
     Ensure master.json and all five source JSON files contain this ISBN.
 
     If the ISBN already exists, existing values are preserved.
     If it is new, an all-N/A skeleton is inserted.
-
-    Parameters
-    ----------
-    isbn13 : str
-        Normalized ISBN-13.
     """
-    # ---- master.json ----
-    master = load_master_json()
-    if isbn13 not in master:
-        master[isbn13] = empty_master_isbn_record(isbn13)
-    else:
-        # Make sure every source block exists even in older/partial files.
-        master_record = master[isbn13]
-        master_record.setdefault("isbn13", isbn13)
-        for source in config.SOURCES:
-            if source not in master_record:
-                master_record[source] = empty_source_record(isbn13, source)
-    save_master_json(master)
-
-    # ---- five per-source JSON files ----
-    for source in config.SOURCES:
-        source_data = load_source_json(source)
-        if isbn13 not in source_data:
-            source_data[isbn13] = empty_source_record(isbn13, source)
-        save_source_json(source, source_data)
+    ensure_isbn_placeholders_batch([isbn13])
 
 
 def merge_source_record(

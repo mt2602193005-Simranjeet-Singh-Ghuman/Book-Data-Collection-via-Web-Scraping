@@ -1,0 +1,1 @@
+An introduction to the ActiveX Web development environment and toolset. The book covers what ActiveX Technologies are, how they relate to existing Microsoft technologies and how they affect the Web. The basics of writing ActiveX scripts and creating ActiveX Conrtols and Documents are also covered.

@@ -19,7 +19,11 @@ from bs4 import BeautifulSoup, Tag
 import config
 from scraper.base import BaseScraper, ScrapedBook
 from utils.isbn import isbn13_to_isbn10
-from utils.title_match import listing_matches_hints, note_title_match
+from utils.title_match import (
+    ambiguous_match_detail,
+    classify_title_match,
+    note_title_match,
+)
 
 
 class KoboScraper(BaseScraper):
@@ -51,14 +55,17 @@ class KoboScraper(BaseScraper):
         *,
         hint_title: str = "",
         hint_authors: str = "",
+        hint_titles: list[str] | None = None,
+        allow_author_query: bool = False,
     ) -> ScrapedBook:
         """
-        Scrape Kobo: exact ISBN first, then title/author search fallback.
+        Scrape Kobo: ISBN first, then title variants from Goodreads/Amazon.
 
-        Paperback ISBNs often are not in Kobo's ebook catalog, so after ISBN
-        search fails we search by title (from Amazon/Goodreads) and take the
-        best ebook hit.
+        When GR+Amazon both confirm (allow_author_query=True), also try
+        title+author search. Author is always used for match validation.
         """
+        from utils.title_match import build_title_query_variants
+
         result = ScrapedBook(source=self.source_name, isbn13=isbn13)
         result.fields = self._empty_fields(isbn13)
 
@@ -70,37 +77,71 @@ class KoboScraper(BaseScraper):
         if hit is not None:
             return hit
 
-        title_urls = self._build_title_search_urls(hint_title, hint_authors)
+        titles = list(hint_titles or [])
+        if hint_title and hint_title not in titles:
+            titles = build_title_query_variants(hint_title, *titles)
+        titles = titles or build_title_query_variants(hint_title)
+        primary = titles[0] if titles else hint_title
+
+        title_urls = self._build_title_search_urls(
+            titles,
+            authors=hint_authors if allow_author_query else "",
+        )
+        ambiguous_notes: list[str] = []
         if title_urls:
-            hit = self._try_search_urls(
+            hit, ambiguous_notes = self._try_search_urls(
                 isbn13,
                 title_urls,
                 require_isbn_match=False,
-                hint_title=hint_title,
+                hint_title=primary,
                 hint_authors=hint_authors,
+                collect_ambiguous=True,
             )
             if hit is not None:
                 return hit
+            if ambiguous_notes:
+                result.error = (
+                    f"Kobo: AMBIGUOUS_TITLE_MATCH for ISBN {isbn13}. "
+                    + " | ".join(ambiguous_notes[:3])
+                )
+                return result
 
         result.error = f"Kobo: could not fetch book data for ISBN {isbn13}."
         return result
 
-    def _build_title_search_urls(self, title: str, authors: str) -> list[str]:
+    def _build_title_search_urls(
+        self,
+        titles: list[str] | str,
+        *,
+        authors: str = "",
+    ) -> list[str]:
+        """Build Kobo search URLs from title variants (+ optional author)."""
         from utils.title_match import clean_hint_title
 
-        title = clean_hint_title(title) or (title or "").strip()
-        if not title or title == config.MISSING_VALUE:
-            return []
+        if isinstance(titles, str):
+            titles = [titles]
         authors = (authors or "").strip()
         if authors == config.MISSING_VALUE:
             authors = ""
-        queries = [f"{title} {authors}".strip(), title]
+        primary_author = authors.split(",")[0].strip() if authors else ""
+
         urls: list[str] = []
-        for query in queries:
-            if not query:
+        queries: list[str] = []
+        for title in titles:
+            title = clean_hint_title(title) or (title or "").strip()
+            if not title or title == config.MISSING_VALUE:
                 continue
+            queries.append(title)
+            if primary_author:
+                queries.append(f"{title} {primary_author}")
+        for query in self.unique_non_empty(queries):
             encoded = quote(query)
-            urls.append(f"https://www.kobo.com/us/en/search?query={encoded}")
+            urls.extend(
+                [
+                    f"https://www.kobo.com/us/en/search?query={encoded}",
+                    f"https://www.kobo.com/ww/en/search?query={encoded}",
+                ]
+            )
         return self.unique_non_empty(urls)
 
     def _try_search_urls(
@@ -111,8 +152,15 @@ class KoboScraper(BaseScraper):
         require_isbn_match: bool,
         hint_title: str = "",
         hint_authors: str = "",
-    ) -> Optional[ScrapedBook]:
-        """Try a list of Kobo search/product URLs; return first useful parse."""
+        collect_ambiguous: bool = False,
+    ):
+        """
+        Try a list of Kobo search/product URLs; return first useful parse.
+
+        When collect_ambiguous=True, returns (ScrapedBook|None, list[str]).
+        Otherwise returns ScrapedBook|None (legacy callers).
+        """
+        ambiguous_notes: list[str] = []
         for url in urls:
             for method, fetcher in (
                 ("requests+bs4", self.fetch_html_requests),
@@ -165,18 +213,35 @@ class KoboScraper(BaseScraper):
                         cand_soup, isbn13
                     ):
                         continue
-                    if not require_isbn_match and not listing_matches_hints(
-                        hint_title=hint_title,
-                        hint_authors=hint_authors,
-                        found_title=str(cand_parsed.fields.get("title", "")),
-                        found_authors=str(cand_parsed.fields.get("authors", "")),
-                    ):
-                        continue
+                    if not require_isbn_match:
+                        decision = classify_title_match(
+                            hint_title=hint_title,
+                            hint_authors=hint_authors,
+                            found_title=str(cand_parsed.fields.get("title", "")),
+                            found_authors=str(cand_parsed.fields.get("authors", "")),
+                        )
+                        if decision == "ambiguous":
+                            ambiguous_notes.append(
+                                ambiguous_match_detail(
+                                    hint_title=hint_title,
+                                    found_title=str(
+                                        cand_parsed.fields.get("title", "")
+                                    ),
+                                )
+                            )
+                            continue
+                        if decision != "accept":
+                            continue
                     cand_parsed.method_used = method
                     cand_parsed.success = True
                     if not require_isbn_match:
                         note_title_match(cand_parsed.fields)
-                    return self._enrich_reviews_if_needed(cand_parsed)
+                    enriched = self._enrich_reviews_if_needed(cand_parsed)
+                    if collect_ambiguous:
+                        return enriched, ambiguous_notes
+                    return enriched
+        if collect_ambiguous:
+            return None, ambiguous_notes
         return None
 
     @staticmethod
@@ -355,6 +420,13 @@ class KoboScraper(BaseScraper):
             if genres:
                 result.fields["genres"] = ", ".join(genres)
 
+        # Always try visible/meta ratings (JSON-LD often omits them on ebook pages).
+        rating, count = self._extract_rating_html(soup)
+        if rating and result.fields.get("rating") in {config.MISSING_VALUE, None, ""}:
+            result.fields["rating"] = rating
+        if count and result.fields.get("ratings_count") in {config.MISSING_VALUE, None, ""}:
+            result.fields["ratings_count"] = count
+
         if not result.cover_urls:
             result.cover_urls = self._extract_cover_urls_html(soup)
 
@@ -413,6 +485,10 @@ class KoboScraper(BaseScraper):
                     fields["language"] = value
                 elif label == "imprint":
                     fields.setdefault("publisher", value)
+                elif label in {"page count", "pages", "number of pages", "print length"}:
+                    pages_match = re.search(r"(\d+)", value)
+                    if pages_match:
+                        fields["pages"] = pages_match.group(1)
                 continue
 
             # Publisher sometimes appears as a bare linked list item
@@ -659,8 +735,79 @@ class KoboScraper(BaseScraper):
                             return str(offers["url"])
         return ""
 
+    def _extract_rating_html(self, soup: BeautifulSoup) -> tuple[str, str]:
+        """
+        Pull rating + count from Kobo product meta / star widgets.
+
+        Inspect Element examples:
+          <meta property="og:rating" content="4.36">
+          <meta property="og:rating_count" content="445">
+          <div class="kobo star-rating ..." aria-label="Rated 4.5 out of 5 stars">
+        """
+        rating = ""
+        count = ""
+        for meta_sel, target in (
+            ('meta[property="og:rating"]', "rating"),
+            ('meta[name="og:rating"]', "rating"),
+            ('meta[property="og:rating_count"]', "count"),
+            ('meta[name="og:rating_count"]', "count"),
+            ('meta[itemprop="ratingValue"]', "rating"),
+            ('meta[itemprop="ratingCount"]', "count"),
+        ):
+            meta = soup.select_one(meta_sel)
+            if not isinstance(meta, Tag) or not meta.get("content"):
+                continue
+            content = str(meta.get("content")).strip()
+            if target == "rating" and not rating:
+                try:
+                    rating = f"{float(content):.2f}"
+                except (TypeError, ValueError):
+                    rating = content
+            elif target == "count" and not count:
+                count = re.sub(r"[^\d]", "", content)
+
+        if not rating:
+            star = soup.select_one(
+                ".rating-star-container [aria-label], "
+                ".star-rating[aria-label], "
+                ".kobo.star-rating[aria-label], "
+                "[class*='star-rating'][aria-label]"
+            )
+            if isinstance(star, Tag):
+                label = str(star.get("aria-label") or "")
+                match = re.search(r"([\d.]+)\s*out of", label, flags=re.I)
+                if match:
+                    rating = match.group(1)
+
+        # Visible "4.3 (445 ratings)" style text near the title.
+        if not count or not rating:
+            page_text = soup.get_text(" ", strip=True)
+            combo = re.search(
+                r"(\d+(?:\.\d+)?)\s*(?:out of\s*5)?\s*\(?\s*([\d,]+)\s*(?:ratings?|reviews?)",
+                page_text,
+                flags=re.I,
+            )
+            if combo:
+                if not rating:
+                    rating = combo.group(1)
+                if not count:
+                    count = combo.group(2).replace(",", "")
+
+        return (
+            self.text_or_na(rating) if rating else "",
+            self.text_or_na(count) if count else "",
+        )
+
     def _extract_title_html(self, soup: BeautifulSoup) -> str:
-        for selector in ["h1", ".item-title", "[data-testid='title']"]:
+        # Inspect Element (Kobo product): h1.title is the canonical title node.
+        for selector in [
+            "h1.title",
+            "h1.item-title",
+            ".item-info h1",
+            "h1",
+            ".item-title",
+            "[data-testid='title']",
+        ]:
             node = soup.select_one(selector)
             if node:
                 text = node.get_text(" ", strip=True)

@@ -3,14 +3,14 @@ utils/media_saver.py
 
 Saves covers, blurbs, and reviews with the project naming rules:
 
-    <isbn13>_cp_<source>_<n>.jpg
-    <isbn13>_b_<Source>_<n>.txt     # Blurb: capitalized Source (professor rule)
-    <isbn13>_r_<source>_1.txt       # All reviews for ISBN+source in one file
+    <isbn13>_c_<Source>_<n>.jpg     # Cover: capitalized Source
+    <isbn13>_b_<Source>_<n>.txt     # Blurb: capitalized Source
+    <isbn13>_r_<Source>_<n>.txt     # One review text file per review
 
-Blurbs go into per-source folders:
-    output/Blurb/Amazon_Blurb/
-    output/Blurb/Kobo_Blurb/
-    ...
+Folders:
+    output/Cover_Page/<Source>_Cover/
+    output/Blurb/<Source>_Blurb/
+    output/Reviews/<Source>_Reviews/
 """
 
 from __future__ import annotations
@@ -23,9 +23,9 @@ import requests
 import config
 
 
-def _source_token(source: str) -> str:
-    """Map display source name to cover/review filename token (lowercase)."""
-    return config.SOURCE_FILE_TOKENS.get(source, source.lower())
+def _asset_source_token(source: str) -> str:
+    """Map display source name to Cover/Review/Blurb filename token."""
+    return config.ASSET_SOURCE_TOKENS.get(source, source)
 
 
 def _blurb_source_token(source: str) -> str:
@@ -80,40 +80,67 @@ def save_blurb(
 
 def save_reviews(isbn13: str, source: str, reviews: list[str]) -> list[Path]:
     """
-    Save all reviews for one ISBN + source into a single text file.
+    Save each review as its own text file under output/Reviews/<Source>_Reviews/.
 
-    Filename:
-        <isbn13>_r_<source>_1.txt
+    Filename examples:
+        9780143127550_r_Goodreads_1.txt
+        9780143127550_r_Goodreads_2.txt
 
-    Format (blank line between reviews):
-        review 1 text
-
-        review 2 text
-
-        review 3 text
+    Identical review text for the same ISBN+source is not written twice.
     """
-    token = _source_token(source)
+    token = _asset_source_token(source)
+    folder = config.reviews_dir_for_source(source)
+    folder.mkdir(parents=True, exist_ok=True)
+
     clean_reviews: list[str] = []
+    seen: set[str] = set()
     for review in reviews:
         text = (review or "").strip()
-        if text:
-            clean_reviews.append(text)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        clean_reviews.append(text)
 
     if not clean_reviews:
         return []
 
-    filename = config.REVIEW_FILENAME_TEMPLATE.format(
-        isbn13=isbn13,
-        source=token,
-        n=1,
-    )
-    path = config.REVIEWS_DIR / filename
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("\n\n".join(clean_reviews) + "\n", encoding="utf-8")
-        return [path]
-    except OSError:
-        return []
+    # Skip texts already saved for this ISBN+source.
+    existing = sorted(folder.glob(f"{isbn13}_r_{token}_*.txt"))
+    already: set[str] = set()
+    for path in existing:
+        try:
+            already.add(path.read_text(encoding="utf-8").strip())
+        except OSError:
+            continue
+
+    saved: list[Path] = []
+    next_n = len(existing) + 1
+    for text in clean_reviews:
+        if text in already:
+            # Return existing path if we can find it.
+            for path in existing:
+                try:
+                    if path.read_text(encoding="utf-8").strip() == text:
+                        saved.append(path)
+                        break
+                except OSError:
+                    continue
+            continue
+
+        filename = config.REVIEW_FILENAME_TEMPLATE.format(
+            isbn13=isbn13,
+            source=token,
+            n=next_n,
+        )
+        path = folder / filename
+        try:
+            path.write_text(text + "\n", encoding="utf-8")
+            saved.append(path)
+            already.add(text)
+            next_n += 1
+        except OSError:
+            continue
+    return saved
 
 
 def download_covers(
@@ -122,9 +149,10 @@ def download_covers(
     cover_urls: list[str],
     session: Optional[requests.Session] = None,
 ) -> list[Path]:
-    """Download cover images into output/Cover_Page/."""
+    """Download cover images into output/Cover_Page/<Source>_Cover/."""
     saved: list[Path] = []
-    token = _source_token(source)
+    token = _asset_source_token(source)
+    folder = config.cover_dir_for_source(source)
     http = session or requests.Session()
     http.headers.setdefault(
         "User-Agent",
@@ -145,7 +173,8 @@ def download_covers(
         "BookBub": "https://www.bookbub.com/",
     }
 
-    for index, url in enumerate(cover_urls, start=1):
+    # Refresh-friendly: always write the primary cover as _1 (overwrite).
+    for url in cover_urls:
         if not url or not str(url).startswith("http"):
             continue
         # Skip tiny placeholders / tracking pixels.
@@ -155,9 +184,9 @@ def download_covers(
         filename = config.COVER_FILENAME_TEMPLATE.format(
             isbn13=isbn13,
             source=token,
-            n=index,
+            n=1,
         )
-        path = config.COVER_PAGE_DIR / filename
+        path = folder / filename
         headers = {
             "Referer": referer_by_source.get(source, "https://www.google.com/"),
         }
