@@ -1,0 +1,1 @@
+Describes the techniques involved in writing compilers for high-level languages such as FORTRAN or PL/1. Treats both theory and practical aspects of compiler writing. Discusses semantic routines, their purposes and their connection to syntax recognition.

@@ -1,0 +1,1 @@
+I learned perl, I can now program using perl but only if I have a reference book in front of me and a problem statement to follow. The examples in this book were too basic and doing them didn't really solidify my learning of the subject which is why I need a reference when programming with PERL. I don't recommend this book for non-dummies

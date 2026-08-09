@@ -1,0 +1,1 @@
+Gave up after they started explaining how to draw horendously complicate diagrams in order to derive test cases in a large test space. Either the work I've done doesn't require the same level of testing stringency as others or it was just bad. Either way, it just wasn't very applicable at present. Good coverage of terminology in basic black-box and white-box testing though.

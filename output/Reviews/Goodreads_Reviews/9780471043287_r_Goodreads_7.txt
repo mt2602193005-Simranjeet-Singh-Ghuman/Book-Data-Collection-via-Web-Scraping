@@ -1,0 +1,1 @@
+A good book for beginners as it states principles and methods of work. It is not enough if you want to realy learn about software testing, but it's a very good starting point. It is also a nice reminder for testers with some experience in the field.

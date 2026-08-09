@@ -1,0 +1,1 @@
+This book is arguably the best one out there to start your Perl adventure, and I've learned a lot of small details about programming in Perl. Thank you, Randal L. Schwartz for writing this wonderful book. I'm going to start Intermediate Perl immediately.

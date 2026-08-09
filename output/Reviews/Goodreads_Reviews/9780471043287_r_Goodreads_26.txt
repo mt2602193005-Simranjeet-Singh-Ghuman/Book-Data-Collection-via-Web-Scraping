@@ -1,0 +1,1 @@
+Book mostly for developers that would like to learn more about technics of software testing.

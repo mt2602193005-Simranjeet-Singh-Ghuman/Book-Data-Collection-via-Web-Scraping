@@ -1,0 +1,1 @@
+Summary: Describes the kinds of bugs, and different characteristics that they have. Reflections: This book is great for introducing a bug section. It will produce inquiry about bugs. It is an interactive book, which makes it that much better. Themes: bugs

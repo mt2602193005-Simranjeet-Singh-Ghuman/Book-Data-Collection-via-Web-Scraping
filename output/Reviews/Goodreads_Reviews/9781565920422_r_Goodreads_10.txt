@@ -1,0 +1,1 @@
+Teaches Perl in a nice and easy way, but Perl itself will bring tears when you get to RegEx.

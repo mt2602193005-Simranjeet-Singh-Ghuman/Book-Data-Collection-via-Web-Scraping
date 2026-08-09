@@ -1,0 +1,1 @@
+Integrates a presentation of concepts of objectoriented programming, issues in software engineering, and features of the Java language. Strikes a good balance between a primer and a text for those familiar with the subject. Softcover. Object-oriented programming (Computer Science).

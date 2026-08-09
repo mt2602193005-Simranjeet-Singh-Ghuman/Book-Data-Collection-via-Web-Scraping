@@ -1,0 +1,1 @@
+Totally learning old school PERL for some stuff at work. This text confirms many of the stereotypes that I have of PERL users. The foreword is a hilarious discussion of PERL wizardry which reminds me why I never learned PERL of my own volition. HAHAHA

@@ -1,0 +1,1 @@
+I recommend reading this book for entertainment and never writing a line of perl. The language is more backwards and silly than even VB (which is saying a helluva lot), but the three writers work through its vulgarities well enough to nearly convince the reader that it's actually worth learning. Don't be fooled by their wiles: perl is a mischievous mistress.

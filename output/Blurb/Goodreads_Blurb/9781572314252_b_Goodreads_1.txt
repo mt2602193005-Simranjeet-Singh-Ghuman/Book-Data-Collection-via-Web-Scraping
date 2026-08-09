@@ -1,0 +1,1 @@
+This is an official hands-on, self-paced preparation for the Microsoft Certified Professional Exam on supporting Microsoft Internet Information Server. This is the only self-paced training based on the official instructor-led course and the only self-paced kit that supports 100% of the certification test goals.

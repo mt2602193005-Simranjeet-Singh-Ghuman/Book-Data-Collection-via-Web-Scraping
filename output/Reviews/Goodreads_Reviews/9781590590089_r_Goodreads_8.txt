@@ -1,0 +1,1 @@
+This book is for people who would rather write estimates and requirements documents than code. If the tactics described within sound helpful, you need to get a new job.

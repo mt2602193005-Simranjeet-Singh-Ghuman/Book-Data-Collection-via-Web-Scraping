@@ -1,0 +1,1 @@
+A collection of 24 one-hour lessons on XML and XHTML programming languages. Teaches step-by-step all of the essentials of Web publishing with these languages, with each lesson building on the knowledge from the previous one. Shows how to work with Java sound, applets, and video as well. Softcover.

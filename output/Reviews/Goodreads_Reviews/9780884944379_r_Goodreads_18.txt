@@ -1,0 +1,1 @@
+Helps to understand how loss is not always a terrible tragedy.

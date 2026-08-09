@@ -1,0 +1,1 @@
+A pretty good book. It bogged down a bit for me in the extensive coverage of multithreading, bit that's a minor complaint. I learned a few things.

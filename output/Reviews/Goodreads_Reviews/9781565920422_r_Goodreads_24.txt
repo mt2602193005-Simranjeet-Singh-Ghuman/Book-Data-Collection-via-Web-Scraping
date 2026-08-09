@@ -1,0 +1,1 @@
+I read this when the first edition came out, but have been away from the language for a while, and picking it up piecemeal was getting old. It’s vastly improved over the earlier version(s), which were pretty good to begin with. Highly recommended for anyone who wants to learn about Perl. (Yes, there are a zillion of online tutorials, but this covers a lot more breadth.)

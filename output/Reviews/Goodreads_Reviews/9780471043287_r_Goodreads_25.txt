@@ -1,0 +1,1 @@
+It's a nice book to introduce someone to the testing concepts and notions, but not to be taken as a definite guide, since some examples and descriptions are not up to date nor totally clear. However, the main concepts of software testing are presented and explained.

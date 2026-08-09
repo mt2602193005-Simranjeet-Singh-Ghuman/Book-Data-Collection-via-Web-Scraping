@@ -1,0 +1,1 @@
+I read 2011 version as recommended by a colleague, to refresh my theoretical knowledge in software testing. It helps me but didn't meet my expectations. I believe it works well for beginners or students but sadly it is not enough if you want to 'learn' about software testing. Its theory is outdated in some areas, more examples are needed to get the author points.

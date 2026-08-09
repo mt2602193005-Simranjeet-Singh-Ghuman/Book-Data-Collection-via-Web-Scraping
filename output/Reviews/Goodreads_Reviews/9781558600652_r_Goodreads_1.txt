@@ -1,0 +1,1 @@
+Informative but out of date. The section on expert systems is probably irrelevant now, as learning algorithms have taken off and far surpassed them since this book was published.

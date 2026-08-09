@@ -1,0 +1,1 @@
+This is an update of the book I used to successfully train Lucy. The author is British so it is somewhat geared toward the UK, but has US resources.

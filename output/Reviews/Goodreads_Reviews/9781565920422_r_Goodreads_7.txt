@@ -1,0 +1,1 @@
+Another book moved to the Read shelf even though I haven't read it all the way through yet. This is a solid introduction, but doesn't cover enough material to help me with my legacy software project. I found the Intermediate Perl book by Schwartz more useful. However, that book wouldn't have made any sense to me without reading this book first.

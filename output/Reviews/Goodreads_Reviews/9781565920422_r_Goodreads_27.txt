@@ -1,0 +1,1 @@
+If you want to learn Perl, then this book should be your starting point. The book has a humorous and example-based learning approach. You will see more footnotes than anyother book. The footnotes are worth reading with lot of insights on why things are the way they are.

@@ -1,0 +1,1 @@
+An excellent book about how to write perl programs effectively. A must read for all perl programmers.

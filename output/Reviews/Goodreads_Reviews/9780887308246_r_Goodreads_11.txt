@@ -1,0 +1,1 @@
+There are parts of this book that I liked and there are the ones that felt outdated. Lots of examples are based on business cases from the 80s and 90s (which is not that bad in itself) but there's a staggering number of them that refers to hardware businesses instead of software ones. There are not a lot of actionable items one could derive from this book.

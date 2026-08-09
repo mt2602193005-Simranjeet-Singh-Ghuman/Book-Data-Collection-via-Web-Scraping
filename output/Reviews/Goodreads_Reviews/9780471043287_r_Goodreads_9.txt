@@ -1,0 +1,1 @@
+This book is a very good introductory book about Software testing. I found Chapter 4 on Test-Case design the most informative.

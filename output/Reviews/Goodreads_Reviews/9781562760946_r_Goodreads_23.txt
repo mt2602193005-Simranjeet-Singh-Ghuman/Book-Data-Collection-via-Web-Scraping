@@ -1,0 +1,1 @@
+Cool concept but full of wrong information on basic stuff. Examples: they say the maximum value of a 16 bit number is 256. They reference a programming language called "C+". It makes me think this book was edited by people who know nothing about programming. I didn't finish the book.

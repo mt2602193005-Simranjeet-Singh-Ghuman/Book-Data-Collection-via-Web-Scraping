@@ -1,0 +1,1 @@
+Although the illustrations are quite dated, this is still a great introduction to important ways of thinking about the relationships between program components (these days, we would say "objects"). Considering the renewed interest in refactoring, brought on by the Agile processes, a little back-to-basics study on "what makes a good boundary definition" is eminently useful.

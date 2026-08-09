@@ -1,0 +1,1 @@
+This book is the most awesome resource on Perl I have ever found. I just finished reading it through for the second time; it was a good read when I was a beginner, and it is still a good reader as an advanced programmer.

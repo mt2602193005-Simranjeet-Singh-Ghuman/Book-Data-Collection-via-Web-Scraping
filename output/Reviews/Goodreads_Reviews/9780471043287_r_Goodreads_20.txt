@@ -1,0 +1,1 @@
+It could have been an interesting read on testing if it had more recent information and covered several layers (e.g. game testing, app testing...).

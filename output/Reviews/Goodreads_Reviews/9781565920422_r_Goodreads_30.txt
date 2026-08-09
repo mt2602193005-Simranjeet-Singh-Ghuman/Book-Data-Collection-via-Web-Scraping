@@ -1,0 +1,1 @@
+This was an add on text for a Perl class. Seems like I've taken more than one version of this class, in person, online, they're everywhere. Contains various perls of wisdom you should need for this language.

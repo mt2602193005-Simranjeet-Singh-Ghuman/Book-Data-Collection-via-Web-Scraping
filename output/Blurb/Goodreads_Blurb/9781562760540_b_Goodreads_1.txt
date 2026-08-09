@@ -1,0 +1,1 @@
+Written for the advanced programmer writing professional-level programs either for DOS or Windows in C++, this book guides programmers through the power and intricacy of programming in C++. Little known C++ tricks are revealed to solve the problems that programmers face in the real world. Disk includes all the source code examples from the text.

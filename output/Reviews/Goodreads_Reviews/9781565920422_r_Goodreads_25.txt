@@ -1,0 +1,1 @@
+This is *the* Perl book. If you only read one, this should be it. The text explains concepts well, and the end-of-chapter exercises are designed to reinforce what you've just learned, integrating with anything you learned earlier, and also to stretch your imagination. You don't need any prior programming knowledge to find this a useful resource.

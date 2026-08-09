@@ -1,6 +1,17 @@
 # Book Web Scraper — install with:
 #   pip install -r requirements.txt
+#python --version
+#pip install -r requirements.txt
+#python -m pip install playwright
+#python -m playwright install chromium
+#python -c "import requests, bs4, lxml, playwright; print('OK')"
 #   playwright install chromium
+
+#python main.py --source Goodreads
+#python main.py --source Amazon
+#python main.py --source Kobo
+#python main.py --source Audible
+#python main.py --source BookBub
 
 # HTTP client for normal page downloads
 requests>=2.31.0

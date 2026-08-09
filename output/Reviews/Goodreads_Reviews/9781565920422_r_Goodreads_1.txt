@@ -1,0 +1,1 @@
+There's this old geek joke where you compare programming languages and cars (Assembler would be a Formula 1 racer, LISP would be an electric car, etc). Here's Perl: [image error]

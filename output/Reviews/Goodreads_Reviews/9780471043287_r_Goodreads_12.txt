@@ -1,0 +1,1 @@
+I just got done reading the first edition. One comment: In the self-assessment test at the front of the book, I scored about 11/14, and then found two more questions. 1. Do you have a test case where the input is not numeric? 2. Do you have a test case where the sum of two numbers results in arithmetic overflow?

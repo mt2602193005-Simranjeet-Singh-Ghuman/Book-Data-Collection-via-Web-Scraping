@@ -1,0 +1,1 @@
+Explains the fundamentals of building cross-browser, cross-platform compatible Web sites, covering HTML, XML, animation, sound, site management, and marketing techniques.
