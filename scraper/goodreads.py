@@ -505,7 +505,7 @@ class GoodreadsScraper(BaseScraper):
 
     def _collect_reviews_with_playwright(self, page_url: str) -> list[str]:
         """
-        Use Playwright to load the book page and collect more review texts.
+        Use shared Playwright to load the book page and collect more review texts.
 
         Returns
         -------
@@ -513,30 +513,27 @@ class GoodreadsScraper(BaseScraper):
             Extra review strings (may be empty if Playwright unavailable/blocked).
         """
         try:
-            from playwright.sync_api import sync_playwright
+            from scraper.browser_pool import shared_page
         except ImportError:
             return []
 
         reviews: list[str] = []
         try:
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=True)
-                context = browser.new_context(
-                    user_agent=self.DEFAULT_HEADERS["User-Agent"],
-                    locale="en-US",
-                )
-                page = context.new_page()
+            with shared_page(
+                user_agent=self.DEFAULT_HEADERS["User-Agent"],
+                locale="en-US",
+            ) as page:
                 page.goto(
                     page_url,
                     wait_until="domcontentloaded",
                     timeout=config.HTTP_TIMEOUT_SECONDS * 1000,
                 )
-                page.wait_for_timeout(2000)
+                page.wait_for_timeout(1200)
 
-                # Scroll a few times to trigger lazy-loaded reviews.
-                for _ in range(6):
+                # Scroll to trigger lazy-loaded reviews (enough for ~10 reviews).
+                for _ in range(3):
                     page.mouse.wheel(0, 2500)
-                    page.wait_for_timeout(800)
+                    page.wait_for_timeout(500)
 
                 # Click common "Show more reviews" style buttons if present.
                 for label in ("Show more reviews", "More filters", "Choose shelves"):
@@ -549,8 +546,6 @@ class GoodreadsScraper(BaseScraper):
                         pass
 
                 html = page.content()
-                context.close()
-                browser.close()
                 soup = self.make_soup(html)
                 reviews = self._extract_reviews_from_soup(soup)
         except Exception:  # noqa: BLE001

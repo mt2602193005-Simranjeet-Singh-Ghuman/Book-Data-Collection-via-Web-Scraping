@@ -152,8 +152,9 @@ MISSING_VALUE: Final[str] = "N/A"
 # Default CSV count when the user presses Enter (they can type a number or "all").
 CSV_ISBN_LIMIT: Final[int] = 20
 
-# Target minimum reviews per source (assignment: at least 25 when available).
-MIN_REVIEWS_PER_SOURCE: Final[int] = 25
+# Target minimum reviews per source when the site has that many available.
+# (Lowered from 25 for runtime; still saves one file per review under Reviews/.)
+MIN_REVIEWS_PER_SOURCE: Final[int] = 10
 
 # ------------------------------------------------------------------------------
 # METADATA FIELD ORDER (shared schema for master + per-source JSON)

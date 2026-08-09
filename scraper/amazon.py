@@ -124,7 +124,7 @@ class AmazonScraper(BaseScraper):
 
     def fetch_html_playwright(self, url: str) -> Optional[str]:
         """
-        Level-2 Amazon fetch with anti-bot hardening.
+        Level-2 Amazon fetch with anti-bot hardening on the shared browser.
 
         - Prefer stealth Chromium settings
         - Warm up on the store homepage (cookies)
@@ -132,7 +132,7 @@ class AmazonScraper(BaseScraper):
         - Use en-IN locale for amazon.in
         """
         try:
-            from playwright.sync_api import sync_playwright
+            from scraper.browser_pool import amazon_page
         except ImportError:
             return None
 
@@ -140,80 +140,44 @@ class AmazonScraper(BaseScraper):
         home = "https://www.amazon.in/" if is_in else "https://www.amazon.com/"
         locale = "en-IN" if is_in else "en-US"
         timezone = "Asia/Kolkata" if is_in else "America/New_York"
+        store_key = "in" if is_in else "com"
 
         try:
-            with sync_playwright() as playwright:
-                browser = None
-                # Real Chrome channel helps when available; else bundled Chromium.
-                for launch_kwargs in (
-                    {
-                        "channel": "chrome",
-                        "headless": True,
-                        "args": ["--disable-blink-features=AutomationControlled"],
-                    },
-                    {
-                        "headless": True,
-                        "args": ["--disable-blink-features=AutomationControlled"],
-                    },
-                ):
-                    try:
-                        browser = playwright.chromium.launch(**launch_kwargs)
-                        break
-                    except Exception:  # noqa: BLE001
-                        browser = None
-                if browser is None:
-                    return None
-
-                context = browser.new_context(
-                    user_agent=self.DEFAULT_HEADERS["User-Agent"],
-                    locale=locale,
-                    timezone_id=timezone,
-                    viewport={"width": 1366, "height": 768},
-                    extra_http_headers={
-                        "Accept-Language": (
-                            "en-IN,en;q=0.9" if is_in else "en-US,en;q=0.9"
-                        ),
-                    },
-                )
-                page = context.new_page()
-                page.add_init_script(
-                    "Object.defineProperty(navigator, 'webdriver', "
-                    "{get: () => undefined});"
-                )
-
-                # Homepage warm-up reduces empty/CAPTCHA shells on /dp/ pages.
-                try:
-                    page.goto(
-                        home,
-                        wait_until="domcontentloaded",
-                        timeout=config.HTTP_TIMEOUT_SECONDS * 1000,
-                    )
-                    page.wait_for_timeout(1200)
-                except Exception:  # noqa: BLE001
-                    pass
-
+            with amazon_page(
+                store_key,
+                user_agent=self.DEFAULT_HEADERS["User-Agent"],
+                locale=locale,
+                timezone_id=timezone,
+                extra_http_headers={
+                    "Accept-Language": (
+                        "en-IN,en;q=0.9" if is_in else "en-US,en;q=0.9"
+                    ),
+                },
+                home_url=home,
+                warm_ms=800,
+                timeout_ms=config.HTTP_TIMEOUT_SECONDS * 1000,
+            ) as page:
                 html = ""
+                final_url = url
                 for attempt in range(2):
                     page.goto(
                         url,
                         wait_until="domcontentloaded",
                         timeout=config.HTTP_TIMEOUT_SECONDS * 1000,
                     )
-                    page.wait_for_timeout(2500 + attempt * 1500)
+                    page.wait_for_timeout(1500 + attempt * 1000)
                     # Light scroll helps product widgets hydrate.
                     try:
                         page.mouse.wheel(0, 1200)
-                        page.wait_for_timeout(800)
+                        page.wait_for_timeout(500)
                     except Exception:  # noqa: BLE001
                         pass
                     html = page.content()
+                    final_url = page.url
                     if html and not self._looks_like_captcha(html) and len(html) > 5000:
                         break
-                    page.wait_for_timeout(2000)
+                    page.wait_for_timeout(1200)
 
-                final_url = page.url
-                context.close()
-                browser.close()
                 if html and len(html) > 500 and not self._looks_like_captcha(html):
                     return f"<!-- AMAZON_FINAL_URL:{final_url} -->\n" + html
         except Exception:  # noqa: BLE001
@@ -232,7 +196,10 @@ class AmazonScraper(BaseScraper):
         """Try product URLs; optionally require ISBN or title/author match."""
         fallback: ScrapedBook | None = None
 
-        for url in candidate_urls:
+        # Cap fan-out: trying every search hit with Playwright is very slow.
+        urls = list(candidate_urls)[:6]
+
+        for url in urls:
             # Playwright first: Amazon requests almost always hit CAPTCHA.
             for method, fetcher in (
                 ("playwright", self.fetch_html_playwright),

@@ -249,37 +249,25 @@ class AudibleScraper(BaseScraper):
         return not any(fragment in title for fragment in banned_fragments)
 
     def fetch_html_playwright(self, url: str) -> Optional[str]:
-        """Level-2 fetch tuned for Audible's JS-heavy storefront."""
+        """Level-2 fetch tuned for Audible's JS-heavy storefront (shared browser)."""
         try:
-            from playwright.sync_api import sync_playwright
+            from scraper.browser_pool import shared_page
         except ImportError:
             return None
 
         try:
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(
-                    headless=True,
-                    args=["--disable-blink-features=AutomationControlled"],
-                )
-                context = browser.new_context(
-                    user_agent=self.DEFAULT_HEADERS["User-Agent"],
-                    locale="en-US",
-                    viewport={"width": 1366, "height": 768},
-                )
-                page = context.new_page()
-                page.add_init_script(
-                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-                )
+            with shared_page(
+                user_agent=self.DEFAULT_HEADERS["User-Agent"],
+                locale="en-US",
+            ) as page:
                 page.goto(
                     url,
                     wait_until="domcontentloaded",
                     timeout=config.HTTP_TIMEOUT_SECONDS * 1000,
                 )
-                page.wait_for_timeout(2500)
+                page.wait_for_timeout(1500)
                 html = page.content()
                 final_url = page.url
-                context.close()
-                browser.close()
                 if html and len(html) > 2000 and not self._looks_like_block(html):
                     return f"<!-- AUDIBLE_FINAL_URL:{final_url} -->\n" + html
         except Exception:  # noqa: BLE001
@@ -658,32 +646,26 @@ class AudibleScraper(BaseScraper):
         if not page_url.startswith("http"):
             return parsed
 
-        # Reload and try to expose more review text.
+        # Reload and try to expose more review text (shared browser).
         try:
-            from playwright.sync_api import sync_playwright
+            from scraper.browser_pool import shared_page
         except ImportError:
             return parsed
 
         try:
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(
-                    headless=True,
-                    args=["--disable-blink-features=AutomationControlled"],
-                )
-                context = browser.new_context(
-                    user_agent=self.DEFAULT_HEADERS["User-Agent"],
-                    locale="en-US",
-                )
-                page = context.new_page()
+            with shared_page(
+                user_agent=self.DEFAULT_HEADERS["User-Agent"],
+                locale="en-US",
+            ) as page:
                 page.goto(
                     page_url,
                     wait_until="domcontentloaded",
                     timeout=config.HTTP_TIMEOUT_SECONDS * 1000,
                 )
-                page.wait_for_timeout(2500)
-                for _ in range(5):
+                page.wait_for_timeout(1500)
+                for _ in range(3):
                     page.mouse.wheel(0, 2500)
-                    page.wait_for_timeout(600)
+                    page.wait_for_timeout(500)
                 try:
                     more = page.locator("text=Show more reviews")
                     if more.count() > 0:
@@ -692,8 +674,6 @@ class AudibleScraper(BaseScraper):
                 except Exception:  # noqa: BLE001
                     pass
                 html = page.content()
-                context.close()
-                browser.close()
             extra = self._extract_reviews_html(self.make_soup(html))
             merged = self.unique_non_empty(parsed.reviews + extra)
             parsed.reviews = merged[: max(config.MIN_REVIEWS_PER_SOURCE, len(merged))]

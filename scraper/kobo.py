@@ -321,31 +321,27 @@ class KoboScraper(BaseScraper):
     def fetch_html_playwright(self, url: str) -> Optional[str]:
         """
         Level-2 fetch with a slightly longer wait for Kobo's JS storefront.
+        Uses the shared Playwright browser.
         """
         try:
-            from playwright.sync_api import sync_playwright
+            from scraper.browser_pool import shared_page
         except ImportError:
             return None
 
         try:
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=True)
-                context = browser.new_context(
-                    user_agent=self.DEFAULT_HEADERS["User-Agent"],
-                    locale="en-US",
-                )
-                page = context.new_page()
+            with shared_page(
+                user_agent=self.DEFAULT_HEADERS["User-Agent"],
+                locale="en-US",
+            ) as page:
                 page.goto(
                     url,
                     wait_until="domcontentloaded",
                     timeout=config.HTTP_TIMEOUT_SECONDS * 1000,
                 )
                 # Kobo search often redirects to /ebook/... after hydration.
-                page.wait_for_timeout(2500)
+                page.wait_for_timeout(1500)
                 html = page.content()
                 final_url = page.url
-                context.close()
-                browser.close()
                 if html and len(html) > 500 and not self._looks_like_challenge(html):
                     # Preserve redirected product URL for the parser.
                     return f"<!-- KOBO_FINAL_URL:{final_url} -->\n" + html

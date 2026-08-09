@@ -20,7 +20,7 @@ There is no website UI, no Flask/Django, and no database. Everything runs in the
 
 1. Takes **one ISBN**, **first N CSV rows**, an **inclusive CSV range**, or the **entire CSV**.  
 2. Checks / converts ISBN-10 → ISBN-13.  
-3. Always refreshes existing ISBNs (merge keeps good values; N/A never wipes prior data).  
+3. Skips ISBNs that already have real data in `master.json` (use Refresh / `--refresh` to re-scrape). Merge keeps good values; N/A never wipes prior data.  
 4. Scrapes Goodreads first (canonical title), then Amazon, then Kobo/Audible/BookBub.  
 5. Kobo / Audible / BookBub search by **Goodreads title only**; author is secondary validation. Ambiguous matches are logged as `AMBIGUOUS_TITLE_MATCH` (wrong book is not saved).  
 6. Writes JSON, cover images, blurbs, reviews, and a preprocessing CSV log.  
@@ -112,6 +112,20 @@ In the project folder (use the terminal, not the debugger F5 for `input()` promp
 ```bash
 python main.py
 ```
+
+**Goodreads only (Phase 1)** — then pick menu 2/3/4 for CSV:
+
+```bash
+python main.py --goodreads-only
+```
+
+Same thing:
+
+```bash
+python main.py --source Goodreads
+```
+
+Later you can also use `--source Amazon` (or Kobo / Audible / BookBub).
 
 Menu:
 
@@ -209,7 +223,7 @@ Built-in modules used as well: `json`, `csv`, `pathlib`, `logging`-style prints,
 - **Kobo** — ebook catalog; paperback ISBN often has a different ebook ISBN. Title fallback helps when Amazon/Goodreads already found the book.  
 - **Audible** — audiobook ASINs; print ISBNs rarely match. Title fallback is used after ISBN miss.  
 - **BookBub** — `/search` is often 404 / geo-limited outside the US + Cloudflare. Title fallback tries when possible.  
-- **Amazon** — captchas / bot blocks; reviews may be fewer than 25.  
+- **Amazon** — captchas / bot blocks; reviews may be fewer than the target (10).  
 - Sites change HTML; selectors may need updates later.  
 - Be polite: the code waits about 1–2 seconds between requests.
 

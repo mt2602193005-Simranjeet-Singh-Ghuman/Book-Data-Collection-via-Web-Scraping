@@ -284,54 +284,39 @@ class BookBubScraper(BaseScraper):
         return html
 
     def fetch_html_playwright(self, url: str) -> Optional[str]:
-        """Level-2 fetch tuned for BookBub / Cloudflare."""
+        """Level-2 fetch tuned for BookBub / Cloudflare (shared browser)."""
         try:
-            from playwright.sync_api import sync_playwright
+            from scraper.browser_pool import shared_page
         except ImportError:
             return None
 
         try:
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(
-                    headless=True,
-                    args=["--disable-blink-features=AutomationControlled"],
-                )
-                context = browser.new_context(
-                    user_agent=self.DEFAULT_HEADERS["User-Agent"],
-                    locale="en-US",
-                    viewport={"width": 1366, "height": 768},
-                )
-                # Prefer US storefront cookies (search is US-oriented).
-                context.add_cookies(
-                    [
-                        {
-                            "name": "country",
-                            "value": "US",
-                            "domain": ".bookbub.com",
-                            "path": "/",
-                        },
-                        {
-                            "name": "bookbub_country",
-                            "value": "US",
-                            "domain": ".bookbub.com",
-                            "path": "/",
-                        },
-                    ]
-                )
-                page = context.new_page()
-                page.add_init_script(
-                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-                )
+            with shared_page(
+                user_agent=self.DEFAULT_HEADERS["User-Agent"],
+                locale="en-US",
+                cookies=[
+                    {
+                        "name": "country",
+                        "value": "US",
+                        "domain": ".bookbub.com",
+                        "path": "/",
+                    },
+                    {
+                        "name": "bookbub_country",
+                        "value": "US",
+                        "domain": ".bookbub.com",
+                        "path": "/",
+                    },
+                ],
+            ) as page:
                 page.goto(
                     url,
                     wait_until="domcontentloaded",
                     timeout=config.HTTP_TIMEOUT_SECONDS * 1000,
                 )
-                page.wait_for_timeout(2500)
+                page.wait_for_timeout(1500)
                 html = page.content()
                 final_url = page.url
-                context.close()
-                browser.close()
                 if html and len(html) > 2000 and not self._looks_like_block(html):
                     return f"<!-- BOOKBUB_FINAL_URL:{final_url} -->\n" + html
         except Exception:  # noqa: BLE001

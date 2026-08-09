@@ -6,6 +6,8 @@ main.py by simranjeet singh ghuman
 Run this file to start the scraper:
 
     python main.py
+    python main.py --goodreads-only   # Phase 1: Goodreads only (then pick menu)
+    python main.py --source Goodreads # same as --goodreads-only
     python main.py --refresh          # re-scrape ISBNs already in master.json
     python main.py --refresh 9780...  # refresh one ISBN
 
@@ -64,30 +66,11 @@ def print_banner() -> None:
 
 def ensure_playwright_ready(verbose: bool = True) -> bool:
     """
-    Make sure Playwright Chromium is installed (needed for Level-2 scraping).
-
-    Returns True when a browser launch smoke-test succeeds.
+    Start the shared Playwright Chromium used by all Level-2 fetches.
     """
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        if verbose:
-            print("[WARN] Playwright not installed. Level-2 scraping disabled.")
-        return False
+    from scraper.browser_pool import start_shared_browser
 
-    try:
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
-            browser.close()
-        if verbose:
-            print("[OK] Playwright Chromium ready")
-        return True
-    except Exception as exc:  # noqa: BLE001
-        if verbose:
-            print("[WARN] Playwright Chromium missing/unusable.")
-            print("       Run: python -m playwright install chromium")
-            print(f"       Detail: {exc}")
-        return False
+    return start_shared_browser(verbose=verbose)
 
 
 def prompt_manual_isbn() -> str:
@@ -295,20 +278,58 @@ def process_isbn_inputs(raw_isbns: list[str]) -> list[IsbnResult]:
     return valid_results
 
 
-def ask_rescrape_or_skip(isbn13: str) -> bool:
+def _source_has_title(isbn13: str, source: str) -> bool:
+    """True when master.json already has a real title for this source."""
+    master = load_master_json()
+    record = master.get(isbn13)
+    if not isinstance(record, dict):
+        return False
+    block = record.get(source) or {}
+    title = str(block.get("title", config.MISSING_VALUE)).strip()
+    return bool(title) and title != config.MISSING_VALUE
+
+
+def ask_rescrape_or_skip(
+    isbn13: str,
+    *,
+    only_sources: list[str] | None = None,
+) -> bool:
     """
-    Always re-scrape (refresh). Existing good values are preserved by
-    merge_source_record (N/A does not wipe prior data).
+    Skip ISBNs that already have real data (faster batches).
+
+    - All-sites mode: skip if any source already has a title.
+    - Single-source mode (--source / --goodreads-only): skip only if THAT
+      source already has a title.
+
+    Use menu option 5 / --refresh when you intentionally want to re-scrape.
     """
+    if only_sources and len(only_sources) == 1:
+        source = only_sources[0]
+        if _source_has_title(isbn13, source):
+            print(
+                f"[SKIP] {source} already has data for {isbn13} "
+                f"— use Refresh to re-scrape."
+            )
+            append_preprocessing_log(
+                isbn13=isbn13,
+                source="Input",
+                issue_type="Already Scraped",
+                details=f"Skipped; {source} already has non-N/A title",
+                action_taken="Skipped",
+            )
+            return False
+        return True
+
     if isbn_already_scraped(isbn13):
-        print(f"[REFRESH] ISBN {isbn13} already in master — re-scraping to fill gaps.")
+        print(f"[SKIP] ISBN {isbn13} already in master — use Refresh to re-scrape.")
         append_preprocessing_log(
             isbn13=isbn13,
             source="Input",
             issue_type="Already Scraped",
-            details="Auto re-scrape (no prompt) to maximize filled fields",
-            action_taken="Re-scrape continued",
+            details="Skipped; already has non-N/A title in master.json",
+            action_taken="Skipped",
         )
+        return False
     return True
 
 
@@ -501,24 +522,42 @@ def scrape_and_persist(
     return True
 
 
-def run_scraping(
-    valid_results: list[IsbnResult],
-    *,
-    force_refresh: bool = False,
-) -> None:
-    """
-    Scrape all five websites for each ISBN.
-
-    Order is intentional: Goodreads first supplies the canonical title used by
-    Kobo / Audible / BookBub title-only discovery.
-    """
-    scrapers: list[BaseScraper] = [
+def _all_scrapers() -> list[BaseScraper]:
+    """Default scrape order (Goodreads first for discovery)."""
+    return [
         GoodreadsScraper(),
         AmazonScraper(),
         KoboScraper(),
         AudibleScraper(),
         BookBubScraper(),
     ]
+
+
+def run_scraping(
+    valid_results: list[IsbnResult],
+    *,
+    force_refresh: bool = False,
+    only_sources: list[str] | None = None,
+) -> None:
+    """
+    Scrape websites for each ISBN.
+
+    Order is intentional: Goodreads first supplies the canonical title used by
+    Kobo / Audible / BookBub title-only discovery.
+
+    only_sources
+        If set (e.g. ["Goodreads"]), scrape only those sites.
+    """
+    scrapers = _all_scrapers()
+    if only_sources:
+        wanted = {name.lower(): name for name in only_sources}
+        scrapers = [s for s in scrapers if s.source_name.lower() in wanted]
+        if not scrapers:
+            print(f"[ERROR] No scrapers matched sources: {only_sources}")
+            return
+
+    active_names = [s.source_name for s in scrapers]
+    print(f"[MODE] Scraping source(s): {', '.join(active_names)}")
 
     total = len(valid_results)
     completed = 0
@@ -530,8 +569,8 @@ def run_scraping(
         print()
 
         if force_refresh:
-            print("[REFRESH] Re-scraping all 5 websites...")
-        elif not ask_rescrape_or_skip(result.isbn13):
+            print(f"[REFRESH] Re-scraping: {', '.join(active_names)}...")
+        elif not ask_rescrape_or_skip(result.isbn13, only_sources=only_sources):
             completed += 1
             print(f"Progress: {completed:02d}/{total:02d}")
             print("-" * 40)
@@ -566,18 +605,23 @@ def run_scraping(
             if not ok and not had_metadata:
                 needs_retry.append(scraper)
 
-        hints = _discovery_hints_from_master(result.isbn13)
-        if needs_retry and hints["title"]:
-            print(f"[RETRY] Using confirmed title {hints['title']!r} for earlier misses...")
-            for scraper in needs_retry:
-                scrape_and_persist(
-                    result.isbn13,
-                    scraper,
-                    hint_title=hints["title"],
-                    hint_authors=hints["authors"],
-                    hint_titles=hints["titles"],
-                    allow_author_query=bool(hints["dual_confirmed"]),
+        # Retry only makes sense when more than one site can supply a title.
+        if len(scrapers) > 1:
+            hints = _discovery_hints_from_master(result.isbn13)
+            if needs_retry and hints["title"]:
+                print(
+                    f"[RETRY] Using confirmed title {hints['title']!r} "
+                    f"for earlier misses..."
                 )
+                for scraper in needs_retry:
+                    scrape_and_persist(
+                        result.isbn13,
+                        scraper,
+                        hint_title=hints["title"],
+                        hint_authors=hints["authors"],
+                        hint_titles=hints["titles"],
+                        allow_author_query=bool(hints["dual_confirmed"]),
+                    )
 
         completed += 1
         print()
@@ -596,9 +640,24 @@ def _parse_cli_args(argv: list[str]) -> argparse.Namespace:
         nargs="*",
         metavar="ISBN",
         help=(
-            "Re-scrape ISBNs already in master.json (all five sites). "
-            "Pass optional ISBN(s); with no ISBN, refresh every ISBN in master.json."
+            "Re-scrape ISBNs already in master.json. "
+            "Pass optional ISBN(s); with no ISBN, refresh every ISBN in master.json. "
+            "Combine with --source / --goodreads-only to refresh one site only."
         ),
+    )
+    parser.add_argument(
+        "--source",
+        choices=list(config.SOURCES),
+        metavar="SOURCE",
+        help=(
+            "Scrape only one website. "
+            "Choices: Goodreads, Amazon, Kobo, Audible, BookBub."
+        ),
+    )
+    parser.add_argument(
+        "--goodreads-only",
+        action="store_true",
+        help="Shortcut for --source Goodreads (Phase 1).",
     )
     return parser.parse_args(argv)
 
@@ -626,7 +685,19 @@ def run(argv: list[str] | None = None) -> int:
     """Program entry orchestrator."""
     args = _parse_cli_args(list(argv) if argv is not None else sys.argv[1:])
 
+    only_sources: list[str] | None = None
+    if args.goodreads_only and args.source and args.source != "Goodreads":
+        print("[ERROR] Use either --goodreads-only or --source ..., not both.")
+        return 1
+    if args.goodreads_only:
+        only_sources = ["Goodreads"]
+    elif args.source:
+        only_sources = [args.source]
+
     print_banner()
+    if only_sources:
+        print(f"Source filter: {', '.join(only_sources)} only")
+        print()
 
     create_project_folders(verbose=True)
     ensure_preprocessing_csv_header(verbose=True)
@@ -686,16 +757,28 @@ def run(argv: list[str] | None = None) -> int:
         print("[ERROR] No valid ISBNs to process.")
         return 1
 
-    # Keep Windows from sleeping / turning the screen off during long scrapes.
-    with KeepAwake(verbose=True):
-        run_scraping(valid_results, force_refresh=force_refresh)
+    from scraper.browser_pool import stop_shared_browser
 
+    try:
+        # Keep Windows from sleeping / turning the screen off during long scrapes.
+        with KeepAwake(verbose=True):
+            run_scraping(
+                valid_results,
+                force_refresh=force_refresh,
+                only_sources=only_sources,
+            )
+    finally:
+        stop_shared_browser()
+
+    active = ", ".join(only_sources) if only_sources else (
+        "Goodreads, Amazon, Kobo, Audible, BookBub"
+    )
     print()
     print("=" * 50)
     print("Run finished")
     print("=" * 50)
-    print("Active sources: Goodreads, Amazon, Kobo, Audible, BookBub")
-    print("Engine        : requests+BeautifulSoup -> Playwright fallback")
+    print(f"Active sources: {active}")
+    print("Engine        : requests+BeautifulSoup -> shared Playwright")
     print("Covers        : output/Cover_Page/<Source>_Cover/  (*_c_<Source>_N.jpg)")
     print("Blurbs        : output/Blurb/<Source>_Blurb/       (*_b_<Source>_N.txt)")
     print("Reviews       : output/Reviews/<Source>_Reviews/   (*_r_<Source>_N.txt)")
