@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Optional
 from urllib.parse import quote
 
+import requests
 from bs4 import BeautifulSoup, Tag
 
 import config
@@ -23,6 +25,7 @@ class GoodreadsScraper(BaseScraper):
     """Goodreads-specific scraper (Module 3 first website)."""
 
     source_name = "Goodreads"
+    _session_warmed: bool = False
 
     def build_candidate_urls(self, isbn13: str) -> list[str]:
         """
@@ -52,6 +55,10 @@ class GoodreadsScraper(BaseScraper):
         ISBN lookup first; title/author search if another site already found
         the book. Enrich reviews with Playwright when short.
         """
+        # Goodreads often returns HTTP 202 challenge shells during batch runs.
+        # Warm cookies once so Level-1 requests succeed more often.
+        self._ensure_warm_session()
+
         result = super().scrape(
             isbn13,
             hint_title=hint_title,
@@ -69,6 +76,120 @@ class GoodreadsScraper(BaseScraper):
                 return result
 
         return self._enrich_reviews_if_needed(result)
+
+    @staticmethod
+    def _looks_like_challenge(html: str) -> bool:
+        """True for bot-check / empty shells (common HTTP 202 bodies)."""
+        if not html or len(html) < 2000:
+            return True
+        low = html.lower()
+        if "og:title" in low or 'id="__next_data__"' in low or "bookTitle" in html:
+            return False
+        markers = (
+            "captcha",
+            "just a moment",
+            "cf-browser-verification",
+            "enable javascript",
+            "unusual traffic",
+        )
+        return any(m in low for m in markers) or len(html) < 8000
+
+    def _ensure_warm_session(self) -> None:
+        """Open Goodreads once in Playwright and copy cookies into requests."""
+        if GoodreadsScraper._session_warmed:
+            return
+        try:
+            from scraper.browser_pool import shared_page
+        except ImportError:
+            return
+
+        try:
+            with shared_page(
+                user_agent=self.DEFAULT_HEADERS["User-Agent"],
+                locale="en-US",
+            ) as page:
+                page.goto(
+                    "https://www.goodreads.com/",
+                    wait_until="domcontentloaded",
+                    timeout=config.PLAYWRIGHT_NAV_TIMEOUT_MS,
+                )
+                page.wait_for_timeout(1500)
+                self._copy_playwright_cookies(page)
+            GoodreadsScraper._session_warmed = True
+            print("[Goodreads] Session warmed (cookies) for faster requests")
+        except Exception:  # noqa: BLE001
+            # Still allow scrape; Playwright fallback remains available.
+            GoodreadsScraper._session_warmed = True
+
+    def _copy_playwright_cookies(self, page: object) -> None:
+        """Copy Playwright cookies into this scraper's requests session."""
+        try:
+            cookies = page.context.cookies()  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            return
+        for cookie in cookies:
+            name = str(cookie.get("name") or "")
+            value = str(cookie.get("value") or "")
+            if not name:
+                continue
+            domain = str(cookie.get("domain") or ".goodreads.com").lstrip(".")
+            try:
+                self.session.cookies.set(name, value, domain=domain)
+            except Exception:  # noqa: BLE001
+                try:
+                    self.session.cookies.set(name, value)
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def fetch_html_requests(self, url: str) -> Optional[str]:
+        """Level-1 fetch; reject Goodreads challenge shells (often HTTP 202)."""
+        last_error = ""
+        for attempt in range(1, config.MAX_RETRIES + 1):
+            try:
+                response = self.session.get(
+                    url,
+                    timeout=config.HTTP_TIMEOUT_SECONDS,
+                    allow_redirects=True,
+                )
+                # 202 is commonly used for challenge interstitials.
+                if response.status_code in {200, 202} and response.text.strip():
+                    if self._looks_like_challenge(response.text):
+                        last_error = f"HTTP {response.status_code} challenge shell"
+                    else:
+                        return response.text
+                else:
+                    last_error = f"HTTP {response.status_code}"
+            except requests.RequestException as exc:
+                last_error = str(exc)
+            time.sleep(min(attempt, 3))
+        _ = last_error
+        return None
+
+    def fetch_html_playwright(self, url: str) -> Optional[str]:
+        """Level-2 fetch; sync cookies back so later requests work better."""
+        try:
+            from scraper.browser_pool import shared_page
+        except ImportError:
+            return None
+
+        try:
+            with shared_page(
+                user_agent=self.DEFAULT_HEADERS["User-Agent"],
+                locale="en-US",
+            ) as page:
+                page.goto(
+                    url,
+                    wait_until="domcontentloaded",
+                    timeout=config.PLAYWRIGHT_NAV_TIMEOUT_MS,
+                )
+                page.wait_for_timeout(2000)
+                self._copy_playwright_cookies(page)
+                html = page.content()
+                if html and not self._looks_like_challenge(html):
+                    return html
+        except Exception:  # noqa: BLE001
+            return None
+        return None
 
     def _scrape_by_title_author(
         self,
@@ -526,7 +647,7 @@ class GoodreadsScraper(BaseScraper):
                 page.goto(
                     page_url,
                     wait_until="domcontentloaded",
-                    timeout=config.HTTP_TIMEOUT_SECONDS * 1000,
+                    timeout=config.PLAYWRIGHT_NAV_TIMEOUT_MS,
                 )
                 page.wait_for_timeout(1200)
 

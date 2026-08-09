@@ -336,7 +336,7 @@ class KoboScraper(BaseScraper):
                 page.goto(
                     url,
                     wait_until="domcontentloaded",
-                    timeout=config.HTTP_TIMEOUT_SECONDS * 1000,
+                    timeout=config.PLAYWRIGHT_NAV_TIMEOUT_MS,
                 )
                 # Kobo search often redirects to /ebook/... after hydration.
                 page.wait_for_timeout(1500)

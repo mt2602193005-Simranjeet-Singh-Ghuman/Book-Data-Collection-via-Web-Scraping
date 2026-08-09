@@ -241,7 +241,7 @@ class BaseScraper(ABC):
                 page.goto(
                     url,
                     wait_until="domcontentloaded",
-                    timeout=config.HTTP_TIMEOUT_SECONDS * 1000,
+                    timeout=config.PLAYWRIGHT_NAV_TIMEOUT_MS,
                 )
                 # Extra wait helps JS-rendered book widgets appear.
                 page.wait_for_timeout(1200)

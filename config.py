@@ -143,6 +143,13 @@ REQUEST_DELAY_SECONDS: Final[tuple[float, float]] = (1.0, 1.25)
 # HTTP timeout (seconds) — used later by scrapers / Playwright navigation.
 HTTP_TIMEOUT_SECONDS: Final[int] = 45
 
+# Playwright navigation timeout (ms). Keep below HTTP timeout so pages fail fast.
+PLAYWRIGHT_NAV_TIMEOUT_MS: Final[int] = 25000
+
+# Hard watchdog: if one Playwright operation exceeds this, kill/reset the browser
+# so the whole batch cannot freeze on a hung Goodreads/Amazon page.
+PLAYWRIGHT_HARD_TIMEOUT_SECONDS: Final[int] = 70
+
 # How many times to retry a failed network request before logging and continuing.
 MAX_RETRIES: Final[int] = 2
 

@@ -155,7 +155,7 @@ class AmazonScraper(BaseScraper):
                 },
                 home_url=home,
                 warm_ms=800,
-                timeout_ms=config.HTTP_TIMEOUT_SECONDS * 1000,
+                timeout_ms=config.PLAYWRIGHT_NAV_TIMEOUT_MS,
             ) as page:
                 html = ""
                 final_url = url
@@ -163,7 +163,7 @@ class AmazonScraper(BaseScraper):
                     page.goto(
                         url,
                         wait_until="domcontentloaded",
-                        timeout=config.HTTP_TIMEOUT_SECONDS * 1000,
+                        timeout=config.PLAYWRIGHT_NAV_TIMEOUT_MS,
                     )
                     page.wait_for_timeout(1500 + attempt * 1000)
                     # Light scroll helps product widgets hydrate.

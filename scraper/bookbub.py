@@ -312,7 +312,7 @@ class BookBubScraper(BaseScraper):
                 page.goto(
                     url,
                     wait_until="domcontentloaded",
-                    timeout=config.HTTP_TIMEOUT_SECONDS * 1000,
+                    timeout=config.PLAYWRIGHT_NAV_TIMEOUT_MS,
                 )
                 page.wait_for_timeout(1500)
                 html = page.content()
