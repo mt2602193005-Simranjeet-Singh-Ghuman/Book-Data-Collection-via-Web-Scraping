@@ -1,0 +1,154 @@
+================================================================================
+VIVA FUNCTIONS TABLE — Function | What it does / use | File | Line
+(Line numbers from current code; search by name if shifted.)
+================================================================================
+
+--- SAVE PIPELINE (SHOW THESE FIRST) ---
+scrape_and_persist          Scrape one site then save all outputs              main.py                 395
+merge_source_record         Write fields to master.json + site JSON            utils/io_handlers.py    314
+save_blurb                  Save blurb .txt                                    utils/media_saver.py    36
+save_reviews                Save each review .txt                              utils/media_saver.py    81
+download_covers             Download cover .jpg                                utils/media_saver.py    146
+append_preprocessing_log    Append CSV log row                                 utils/io_handlers.py    437
+
+--- main.py ---
+run                         Program entry (menu/CLI → scrape → finish)         main.py                 948
+print_banner                Print title banner                                 main.py                 63
+ensure_playwright_ready     Start shared Chromium                              main.py                 72
+prompt_manual_isbn          Ask user for one ISBN                              main.py                 81
+prompt_csv_path             Ask CSV path / default                             main.py                 88
+count_csv_isbns             Count ISBN rows in CSV                             main.py                 103
+_is_header_row              Detect CSV header                                  main.py                 119
+load_isbns_from_csv         Load first N ISBNs                                 main.py                 128
+load_isbns_from_csv_range   Load start–end rows                                main.py                 151
+prompt_first_n              Ask N for menu 2                                   main.py                 185
+prompt_inclusive_range      Ask start/end for menu 3                           main.py                 200
+show_menu                   Show menu 0–5                                      main.py                 224
+process_isbn_inputs         Validate ISBNs + placeholders                      main.py                 236
+_source_has_title           Check if source already has title                  main.py                 286
+ask_rescrape_or_skip        Skip already-scraped ISBNs                         main.py                 297
+_best_hints_from_master     Get best title/authors from master                 main.py                 342
+_discovery_hints_from_master Build GR/Amazon dual-confirm hints                main.py                 350
+_all_scrapers               List of all site scrapers                          main.py                 543
+_persist_openlibrary_book   Save one OL book + print progress                  main.py                 555
+run_openlibrary_fast        Fast OL API batch runner                           main.py                 667
+run_scraping                Main ISBN×site scrape loop                         main.py                 786
+_parse_cli_args             Parse CLI flags                                    main.py                 888
+_load_from_csv_menu         CSV load for menu 2/3/4                            main.py                 929
+
+--- scraper/base.py ---
+ScrapedBook                 Dataclass holding scrape result                    scraper/base.py         28
+BaseScraper                 Shared scraper class                               scraper/base.py         65
+BaseScraper.__init__        Create requests Session                            scraper/base.py         90
+BaseScraper.scrape          Level1 then Level2 fetch loop                      scraper/base.py         97
+build_candidate_urls        Abstract: site URLs                                scraper/base.py         158
+parse_book_page             Abstract: parse HTML                               scraper/base.py         162
+is_parse_useful             Title present?                                     scraper/base.py         170
+polite_delay                1–1.25s delay                                      scraper/base.py         182
+fetch_html_requests         HTTP Level-1                                       scraper/base.py         187
+fetch_html_playwright       Browser Level-2                                    scraper/base.py         222
+make_soup                   BeautifulSoup                                      scraper/base.py         255
+_empty_fields               All fields = N/A                                   scraper/base.py         259
+text_or_na                  Helper text/N/A                                    scraper/base.py         272
+unique_non_empty            Dedupe non-empty strings                           scraper/base.py         280
+
+--- scraper/browser_pool.py ---
+is_ready                    Browser already open?                              scraper/browser_pool.py 30
+start_shared_browser        Launch shared Chromium                             scraper/browser_pool.py 35
+stop_shared_browser         Close browser                                      scraper/browser_pool.py 92
+reset_shared_browser        Restart after hang                                 scraper/browser_pool.py 121
+_apply_page_timeouts        Set nav timeouts                                   scraper/browser_pool.py 127
+hang_watchdog               Kill hung Playwright                               scraper/browser_pool.py 138
+_get_amazon_context         Persistent Amazon context                          scraper/browser_pool.py 170
+amazon_page                 Amazon page helper                                 scraper/browser_pool.py 206
+shared_page                 Generic shared page                                scraper/browser_pool.py 256
+
+--- Site scrapers (main methods; each file also has _extract_* helpers) ---
+GoodreadsScraper            Class                                              scraper/goodreads.py    24
+GoodreadsScraper.scrape     Scrape Goodreads                                   scraper/goodreads.py    47
+AmazonScraper               Class                                              scraper/amazon.py       22
+AmazonScraper.scrape        Scrape Amazon                                      scraper/amazon.py       45
+KoboScraper                 Class                                              scraper/kobo.py         29
+KoboScraper.scrape          ISBN then title                                    scraper/kobo.py         52
+AudibleScraper              Class                                              scraper/audible.py      30
+AudibleScraper.scrape       ISBN then title                                    scraper/audible.py      55
+BookBubScraper              Class                                              scraper/bookbub.py      30
+BookBubScraper.scrape       ISBN then title                                    scraper/bookbub.py      53
+OpenLibraryScraper          Class                                              scraper/openlibrary.py  21
+OpenLibraryScraper.scrape   One ISBN API                                       scraper/openlibrary.py  43
+OpenLibraryScraper.scrape_many  Batch API                                      scraper/openlibrary.py  55
+
+--- utils/io_handlers.py ---
+_atomic_write_text          Safe Windows file write                            utils/io_handlers.py    27
+empty_source_record         N/A skeleton one source                            utils/io_handlers.py    59
+empty_master_isbn_record    N/A skeleton all sources                           utils/io_handlers.py    86
+load_json_file              Load any JSON                                      utils/io_handlers.py    110
+save_json_file              Save any JSON                                      utils/io_handlers.py    142
+_dump_json_with_isbn_gaps   Format master with gaps                            utils/io_handlers.py    151
+_strip_isbn_separators      Clean master text                                  utils/io_handlers.py    189
+load_master_json            Load master.json                                   utils/io_handlers.py    199
+save_master_json            Save master.json                                   utils/io_handlers.py    216
+isbn_already_scraped        Any source has title?                              utils/io_handlers.py    221
+load_source_json            Load site metadata.json                            utils/io_handlers.py    238
+save_source_json            Save site metadata.json                            utils/io_handlers.py    249
+_ensure_isbn_in_master      Insert/repair ISBN in master                       utils/io_handlers.py    254
+ensure_isbn_placeholders_batch  Batch N/A skeletons                            utils/io_handlers.py    274
+ensure_isbn_placeholders    One ISBN skeleton                                  utils/io_handlers.py    304
+merge_source_record         Merge one scrape into JSON                         utils/io_handlers.py    314
+merge_source_records_batch  Batch merge (OL fast)                              utils/io_handlers.py    385
+append_preprocessing_log    CSV log append                                     utils/io_handlers.py    437
+
+--- utils/media_saver.py ---
+_asset_source_token         Filename token                                     utils/media_saver.py    26
+_blurb_source_token         Blurb filename token                               utils/media_saver.py    31
+save_blurb                  Save blurb txt                                     utils/media_saver.py    36
+save_reviews                Save review txts                                   utils/media_saver.py    81
+download_covers             Download cover jpg                                 utils/media_saver.py    146
+
+--- utils/isbn.py ---
+IsbnResult                  Result dataclass                                   utils/isbn.py           14
+InvalidIsbnError            Error type                                         utils/isbn.py           39
+clean_isbn                  Strip junk                                         utils/isbn.py           43
+is_valid_isbn10             Validate ISBN-10                                   utils/isbn.py           80
+isbn13_check_digit          Compute check digit                                utils/isbn.py           107
+is_valid_isbn13             Validate ISBN-13                                   utils/isbn.py           135
+isbn13_to_isbn10            Convert 13→10                                      utils/isbn.py           144
+isbn10_to_isbn13            Convert 10→13                                      utils/isbn.py           160
+normalize_isbn              Full normalize one                                 utils/isbn.py           187
+normalize_isbn_list         Normalize many                                     utils/isbn.py           244
+
+--- utils/title_match.py ---
+build_title_query_variants  Title variants for search                          utils/title_match.py    40
+clean_hint_title            Clean title string                                 utils/title_match.py    69
+normalize_title             Normalize for compare                              utils/title_match.py    93
+significant_title_tokens    Token set                                          utils/title_match.py    137
+title_match_score           Score hint vs found                                utils/title_match.py    150
+titles_roughly_match        Soft title equality                                utils/title_match.py    167
+authors_roughly_match       Soft author equality                               utils/title_match.py    195
+listing_matches_hints       Accept listing?                                    utils/title_match.py    216
+classify_title_match         match/ambiguous/reject                             utils/title_match.py    237
+note_title_match            Note alternate listing                             utils/title_match.py    292
+ambiguous_match_detail      Ambiguous log text                                 utils/title_match.py    301
+
+--- utils/folder_setup.py ---
+create_project_folders      Create input/output dirs                           utils/folder_setup.py   15
+ensure_preprocessing_csv_header  Create CSV header                             utils/folder_setup.py   67
+
+--- utils/keep_awake.py ---
+prevent_sleep               Stop Windows sleep                                 utils/keep_awake.py      34
+allow_sleep                 Allow sleep again                                  utils/keep_awake.py      52
+KeepAwake                   Context manager wrapper                            utils/keep_awake.py      63
+
+--- config.py ---
+metadata_json_filename      Build "<source> metadata.json"                     config.py               204
+source_json_path            Full path to site JSON                             config.py               222
+all_output_directories      All dirs to create                                 config.py               233
+blurb_dir_for_source        Blurb folder path                                  config.py               273
+cover_dir_for_source        Cover folder path                                  config.py               278
+reviews_dir_for_source      Reviews folder path                                config.py               283
+
+================================================================================
+NOTE: Each site file (amazon/goodreads/kobo/…) also has many private helpers
+like _extract_title, _extract_authors, _extract_cover_urls, _extract_reviews_*
+— say: “parse helpers inside each scraper class.”
+================================================================================

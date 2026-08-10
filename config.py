@@ -28,8 +28,8 @@ OUTPUT_DIR: Final[Path] = PROJECT_ROOT / "output"
 # ------------------------------------------------------------------------------
 # SIX OUTPUT FOLDERS (exact set approved for this lab)
 # ------------------------------------------------------------------------------
-# 1) JSON_Master  -> one master.json with every ISBN and all five sources
-# 2) JSON         -> five website subfolders, each with "<source> metadata.json"
+# 1) JSON_Master  -> one master.json with every ISBN and all sources
+# 2) JSON         -> per-website subfolders, each with "<source> metadata.json"
 # 3) Cover_Page   -> per-source cover image folders
 # 4) Blurb        -> per-source blurb / description text folders
 # 5) Reviews      -> per-source review text folders
@@ -42,7 +42,7 @@ REVIEWS_DIR: Final[Path] = OUTPUT_DIR / "Reviews"
 PREPROCESSING_DIR: Final[Path] = OUTPUT_DIR / "Preprocessing"
 
 # ------------------------------------------------------------------------------
-# FIVE WEBSITES (PL Assignment 1)
+# WEBSITES (PL Assignment 1 + Open Library)
 # ------------------------------------------------------------------------------
 # Folder names under output/JSON/ use these display names.
 # JSON filename tokens are lowercase (see SOURCE_FILE_TOKENS).
@@ -52,6 +52,7 @@ SOURCES: Final[tuple[str, ...]] = (
     "Kobo",
     "Audible",
     "BookBub",
+    "OpenLibrary",
 )
 
 # Lowercase tokens used inside JSON metadata filenames only.
@@ -62,6 +63,7 @@ SOURCE_FILE_TOKENS: Final[dict[str, str]] = {
     "Audible": "audible",
     "BookBub": "bookbub",
     "Goodreads": "goodreads",
+    "OpenLibrary": "openlibrary",
 }
 
 # Capitalized source tokens for Cover / Blurb / Review filenames.
@@ -72,6 +74,7 @@ ASSET_SOURCE_TOKENS: Final[dict[str, str]] = {
     "Audible": "Audible",
     "BookBub": "BookBub",
     "Goodreads": "Goodreads",
+    "OpenLibrary": "OpenLibrary",
 }
 
 # Blurb filename source tokens (professor-required casing).
@@ -85,6 +88,7 @@ BLURB_SOURCE_FOLDERS: Final[dict[str, str]] = {
     "Audible": "Audible_Blurb",
     "BookBub": "BookBub_Blurb",
     "Goodreads": "Goodreads_Blurb",
+    "OpenLibrary": "OpenLibrary_Blurb",
 }
 
 # Per-source Cover subfolders under output/Cover_Page/
@@ -94,6 +98,7 @@ COVER_SOURCE_FOLDERS: Final[dict[str, str]] = {
     "Audible": "Audible_Cover",
     "BookBub": "BookBub_Cover",
     "Goodreads": "Goodreads_Cover",
+    "OpenLibrary": "OpenLibrary_Cover",
 }
 
 # Per-source Reviews subfolders under output/Reviews/
@@ -103,7 +108,12 @@ REVIEWS_SOURCE_FOLDERS: Final[dict[str, str]] = {
     "Audible": "Audible_Reviews",
     "BookBub": "BookBub_Reviews",
     "Goodreads": "Goodreads_Reviews",
+    "OpenLibrary": "OpenLibrary_Reviews",
 }
+
+# Fast Open Library API batching (used by --openlibrary-only).
+OPENLIBRARY_BATCH_SIZE: Final[int] = 25
+OPENLIBRARY_REQUEST_DELAY_SECONDS: Final[tuple[float, float]] = (0.15, 0.30)
 
 # ------------------------------------------------------------------------------
 # JSON FILE NAMING (PL Assignment 1.pdf — MANDATORY)

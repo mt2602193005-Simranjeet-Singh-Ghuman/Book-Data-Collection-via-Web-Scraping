@@ -6,10 +6,12 @@ main.py by simranjeet singh ghuman
 Run this file to start the scraper:
 
     python main.py
-    python main.py --goodreads-only   # Phase 1: Goodreads only (then pick menu)
-    python main.py --source Goodreads # same as --goodreads-only
-    python main.py --refresh          # re-scrape ISBNs already in master.json
-    python main.py --refresh 9780...  # refresh one ISBN
+    python main.py --goodreads-only     # Phase 1: Goodreads only (then pick menu)
+    python main.py --source Goodreads   # same as --goodreads-only
+    python main.py --storefronts-only   # Kobo + Audible + BookBub together
+    python main.py --openlibrary-only   # Open Library only (fast API batches)
+    python main.py --refresh            # re-scrape ISBNs already in master.json
+    python main.py --refresh 9780...    # refresh one ISBN
 
 Menu modes:
 1. Single ISBN
@@ -20,8 +22,9 @@ Menu modes:
 
 Pipeline (viva):
   ISBN -> Goodreads (canonical title) -> Amazon (ISBN/hints)
-       -> Kobo / Audible / BookBub search by TITLE ONLY
-       -> author used only as secondary validation
+       -> Kobo / Audible / BookBub: ISBN first; if miss and GR+Amazon confirm,
+          search by TITLE ONLY (no author in query)
+       -> author used only as secondary validation of the match
 """
 
 from __future__ import annotations
@@ -33,10 +36,11 @@ from pathlib import Path
 import config
 from scraper.amazon import AmazonScraper
 from scraper.audible import AudibleScraper
-from scraper.base import BaseScraper
+from scraper.base import BaseScraper, ScrapedBook
 from scraper.bookbub import BookBubScraper
 from scraper.goodreads import GoodreadsScraper
 from scraper.kobo import KoboScraper
+from scraper.openlibrary import OpenLibraryScraper
 from utils.folder_setup import create_project_folders, ensure_preprocessing_csv_header
 from utils.io_handlers import (
     append_preprocessing_log,
@@ -44,6 +48,7 @@ from utils.io_handlers import (
     isbn_already_scraped,
     load_master_json,
     merge_source_record,
+    merge_source_records_batch,
 )
 from utils.isbn import IsbnResult, normalize_isbn_list
 from utils.keep_awake import KeepAwake
@@ -59,7 +64,7 @@ def print_banner() -> None:
     """Print a clear terminal banner."""
     print("=" * 50)
     print("  BOOK WEB SCRAPER - Programming Lab Assignment 1")
-    print("  Sources: Goodreads | Amazon | Kobo | Audible | BookBub")
+    print("  Sources: Goodreads | Amazon | Kobo | Audible | BookBub | OpenLibrary")
     print("=" * 50)
     print()
 
@@ -298,23 +303,24 @@ def ask_rescrape_or_skip(
     Skip ISBNs that already have real data (faster batches).
 
     - All-sites mode: skip if any source already has a title.
-    - Single-source mode (--source / --goodreads-only): skip only if THAT
-      source already has a title.
+    - Filtered mode (--source / --goodreads-only / --storefronts-only):
+      skip only if EVERY selected source already has a title.
 
     Use menu option 5 / --refresh when you intentionally want to re-scrape.
     """
-    if only_sources and len(only_sources) == 1:
-        source = only_sources[0]
-        if _source_has_title(isbn13, source):
+    if only_sources:
+        missing = [s for s in only_sources if not _source_has_title(isbn13, s)]
+        if not missing:
+            shown = ", ".join(only_sources)
             print(
-                f"[SKIP] {source} already has data for {isbn13} "
+                f"[SKIP] {shown} already have data for {isbn13} "
                 f"— use Refresh to re-scrape."
             )
             append_preprocessing_log(
                 isbn13=isbn13,
                 source="Input",
                 issue_type="Already Scraped",
-                details=f"Skipped; {source} already has non-N/A title",
+                details=f"Skipped; all selected sources already have titles: {shown}",
                 action_taken="Skipped",
             )
             return False
@@ -346,7 +352,8 @@ def _discovery_hints_from_master(isbn13: str) -> dict:
     Build discovery hints after Goodreads / Amazon scrapes.
 
     When BOTH Goodreads and Amazon have matching titles, Kobo / Audible /
-    BookBub search more aggressively (title variants + optional author query).
+    BookBub try ISBN first; title search only when dual_confirmed.
+    Title search never includes author in the query (author is validation-only).
     Values are still extracted from each target site — not copied from GR/Amazon.
     """
     master = load_master_json()
@@ -393,6 +400,7 @@ def scrape_and_persist(
     hint_authors: str = "",
     hint_titles: list[str] | None = None,
     allow_author_query: bool = False,
+    allow_title_search: bool = False,
 ) -> bool:
     """
     Scrape one website for one ISBN and persist JSON + media files.
@@ -401,10 +409,19 @@ def scrape_and_persist(
     """
     source = scraper.source_name
     title_search_sources = {"Kobo", "Audible", "BookBub"}
-    if source in title_search_sources and (hint_titles or hint_title):
-        shown = (hint_titles or [hint_title])[:3]
-        confirm = " (GR+Amazon confirmed)" if allow_author_query else ""
-        print(f"[{source}] SEARCHING BY TITLE{confirm}: {shown!r}")
+    if source in title_search_sources:
+        print(f"[{source}] SEARCHING BY ISBN first...")
+        if allow_title_search and (hint_titles or hint_title):
+            shown = (hint_titles or [hint_title])[:3]
+            print(
+                f"[{source}] If ISBN miss → TITLE only "
+                f"(GR+Amazon confirmed, no author): {shown!r}"
+            )
+        elif not allow_title_search:
+            print(
+                f"[{source}] Title fallback off "
+                f"(needs Goodreads+Amazon confirm)"
+            )
     else:
         print(f"[{source}] SEARCHING...")
 
@@ -419,6 +436,7 @@ def scrape_and_persist(
                 [hint_title] if hint_title else []
             )
             scrape_kwargs["allow_author_query"] = allow_author_query
+            scrape_kwargs["allow_title_search"] = allow_title_search
         scraped = scraper.scrape(isbn13, **scrape_kwargs)
     except Exception as exc:  # noqa: BLE001
         append_preprocessing_log(
@@ -530,7 +548,239 @@ def _all_scrapers() -> list[BaseScraper]:
         KoboScraper(),
         AudibleScraper(),
         BookBubScraper(),
+        OpenLibraryScraper(),
     ]
+
+
+def _persist_openlibrary_book(
+    isbn13: str,
+    scraper: OpenLibraryScraper,
+    scraped: ScrapedBook,
+    *,
+    completed: int,
+    total: int,
+) -> bool:
+    """Save one Open Library result and print Goodreads-style progress lines."""
+    source = scraper.source_name
+    print()
+    print("-" * 40)
+    print(f"ISBN {isbn13}")
+    print()
+    print("[OpenLibrary] SEARCHING...")
+
+    if not scraped.success:
+        append_preprocessing_log(
+            isbn13=isbn13,
+            source=source,
+            issue_type="Network Failure",
+            details=scraped.error or "Open Library miss",
+            action_taken="Kept previous values (if any) and continued",
+        )
+        print("[OpenLibrary] Failed — continuing")
+        print()
+        print("Master JSON Updated")
+        print(
+            "Assets: Cover_Page/OpenLibrary_Cover | "
+            "Blurb/OpenLibrary_Blurb | Reviews/OpenLibrary_Reviews"
+        )
+        print(f"Progress: {completed:02d}/{total:02d}")
+        print("-" * 40)
+        return False
+
+    blurb_path = save_blurb(
+        isbn13,
+        source,
+        scraped.blurb or scraped.fields.get("description", ""),
+    )
+    # Short cover timeout keeps the 10k run moving.
+    cover_paths = download_covers(
+        isbn13,
+        source,
+        scraped.cover_urls,
+        session=scraper.session,
+        timeout_seconds=8,
+    )
+    # Open Library has almost no consumer reviews like Goodreads/Amazon.
+    review_paths = save_reviews(isbn13, source, scraped.reviews)
+    review_count = len([r for r in scraped.reviews if str(r).strip()])
+
+    if not blurb_path:
+        append_preprocessing_log(
+            isbn13=isbn13,
+            source=source,
+            issue_type="Missing Fields",
+            details="Blurb unavailable",
+            action_taken="Stored N/A and continued",
+        )
+    if not cover_paths:
+        append_preprocessing_log(
+            isbn13=isbn13,
+            source=source,
+            issue_type="Missing Cover Image",
+            details="No cover downloaded",
+            action_taken="Continued without cover",
+        )
+    if review_count < config.MIN_REVIEWS_PER_SOURCE:
+        append_preprocessing_log(
+            isbn13=isbn13,
+            source=source,
+            issue_type="Reviews Shortfall",
+            details=(
+                f"Saved {review_count} reviews; "
+                f"target was {config.MIN_REVIEWS_PER_SOURCE}"
+            ),
+            action_taken="Saved available reviews and continued",
+        )
+
+    append_preprocessing_log(
+        isbn13=isbn13,
+        source=source,
+        issue_type="Scrape Success",
+        details=(
+            f"method={scraped.method_used}; "
+            f"covers={len(cover_paths)}; "
+            f"reviews={len(review_paths)}; "
+            f"blurb={'yes' if blurb_path else 'no'}"
+        ),
+        action_taken="Master JSON + source JSON updated",
+    )
+
+    found_title = scraped.fields.get("title", config.MISSING_VALUE)
+    print(f"[OpenLibrary] FOUND: {found_title}")
+    print(
+        f"  method={scraped.method_used} | "
+        f"covers={len(cover_paths)} | "
+        f"reviews={review_count} | "
+        f"blurb={'yes' if blurb_path else 'no'}"
+    )
+    print()
+    print("Master JSON Updated")
+    print(
+        "Assets: Cover_Page/OpenLibrary_Cover | "
+        "Blurb/OpenLibrary_Blurb | Reviews/OpenLibrary_Reviews"
+    )
+    print(f"Progress: {completed:02d}/{total:02d}")
+    print("-" * 40)
+    return True
+
+
+def run_openlibrary_fast(
+    valid_results: list[IsbnResult],
+    *,
+    force_refresh: bool = False,
+) -> None:
+    """
+    Fast Open Library-only path: batch API calls + batched JSON writes.
+
+    Aimed at large CSV runs (thousands of ISBNs) within a few hours.
+    """
+    scraper = OpenLibraryScraper()
+    print("[MODE] Scraping source(s): OpenLibrary (fast API batches)")
+    print(
+        f"[OpenLibrary] Batch size={config.OPENLIBRARY_BATCH_SIZE}, "
+        f"delay={config.OPENLIBRARY_REQUEST_DELAY_SECONDS}s"
+    )
+
+    # IMPORTANT: load master ONCE. Calling ask_rescrape_or_skip per ISBN
+    # reloads the huge master.json ~10k times and looks "stuck".
+    print("[OpenLibrary] Loading master.json once to see what is left...")
+    master = load_master_json()
+    todo: list[str] = []
+    skipped = 0
+    for idx, result in enumerate(valid_results, start=1):
+        isbn13 = result.isbn13
+        if force_refresh:
+            todo.append(isbn13)
+        else:
+            record = master.get(isbn13) or {}
+            ol = record.get("OpenLibrary") or {}
+            title = str(ol.get("title", config.MISSING_VALUE)).strip()
+            if title and title != config.MISSING_VALUE:
+                skipped += 1
+            else:
+                todo.append(isbn13)
+        if idx % 2000 == 0:
+            print(f"[OpenLibrary] Scanned {idx}/{len(valid_results)} ISBN rows...")
+
+    total = len(todo)
+    print(
+        f"[OpenLibrary] To scrape: {total} | "
+        f"already have OpenLibrary title: {skipped}"
+    )
+    if total <= 0:
+        print("[OpenLibrary] Nothing to scrape (all skipped or empty).")
+        return
+
+    # Do NOT rewrite master for all 10k up front — placeholders are ensured
+    # per API batch inside merge_source_records_batch (much faster).
+    completed = 0
+    found = 0
+    batch_size = max(1, int(config.OPENLIBRARY_BATCH_SIZE))
+
+    for start in range(0, total, batch_size):
+        chunk = todo[start : start + batch_size]
+        print()
+        print("-" * 40)
+        print(
+            f"[OpenLibrary] API batch {start + 1}-{start + len(chunk)} / {total}"
+        )
+        try:
+            scraped_map = scraper.scrape_many(chunk)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[OpenLibrary] Batch exception — {exc}")
+            for isbn in chunk:
+                append_preprocessing_log(
+                    isbn13=isbn,
+                    source="OpenLibrary",
+                    issue_type="Parsing Failure",
+                    details=str(exc),
+                    action_taken="Continued",
+                )
+                completed += 1
+            print(f"Progress: {completed:02d}/{total:02d}")
+            continue
+
+        fields_batch: dict[str, dict] = {}
+        for isbn in chunk:
+            scraped = scraped_map.get(isbn) or ScrapedBook(
+                source="OpenLibrary", isbn13=isbn
+            )
+            completed += 1
+            if scraped.success:
+                fields_batch[isbn] = scraped.fields
+                if _persist_openlibrary_book(
+                    isbn,
+                    scraper,
+                    scraped,
+                    completed=completed,
+                    total=total,
+                ):
+                    found += 1
+            else:
+                _persist_openlibrary_book(
+                    isbn,
+                    scraper,
+                    scraped,
+                    completed=completed,
+                    total=total,
+                )
+
+        if fields_batch:
+            try:
+                merge_source_records_batch("OpenLibrary", fields_batch)
+                print(
+                    f"[OpenLibrary] Batch JSON save: {len(fields_batch)} ISBN(s) "
+                    f"→ master.json + openlibrary metadata.json "
+                    f"(found so far {found}/{completed})"
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[OpenLibrary] JSON batch save failed: {exc}")
+
+    print()
+    print("=" * 50)
+    print(f"[OpenLibrary] Done. Found data for {found}/{total} ISBN(s).")
+    print("Check: Cover_Page/OpenLibrary_Cover | Blurb/OpenLibrary_Blurb")
+    print("=" * 50)
 
 
 def run_scraping(
@@ -592,7 +842,7 @@ def run_scraping(
             ):
                 print(
                     f"[{scraper.source_name}] GR+Amazon confirmed "
-                    f"→ search title variants (+ author) for cover/blurb..."
+                    f"→ ISBN first, then TITLE only if ISBN misses..."
                 )
             ok = scrape_and_persist(
                 result.isbn13,
@@ -600,7 +850,10 @@ def run_scraping(
                 hint_title=hints["title"],
                 hint_authors=hints["authors"],
                 hint_titles=hints["titles"],
-                allow_author_query=bool(hints["dual_confirmed"]),
+                # Never put author in storefront search queries.
+                allow_author_query=False,
+                # Title fallback only when both GR and Amazon agree.
+                allow_title_search=bool(hints["dual_confirmed"]),
             )
             if not ok and not had_metadata:
                 needs_retry.append(scraper)
@@ -620,7 +873,8 @@ def run_scraping(
                         hint_title=hints["title"],
                         hint_authors=hints["authors"],
                         hint_titles=hints["titles"],
-                        allow_author_query=bool(hints["dual_confirmed"]),
+                        allow_author_query=False,
+                        allow_title_search=bool(hints["dual_confirmed"]),
                     )
 
         completed += 1
@@ -659,6 +913,16 @@ def _parse_cli_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Shortcut for --source Goodreads (Phase 1).",
     )
+    parser.add_argument(
+        "--storefronts-only",
+        action="store_true",
+        help="Scrape Kobo + Audible + BookBub together (ISBN first, then title).",
+    )
+    parser.add_argument(
+        "--openlibrary-only",
+        action="store_true",
+        help="Scrape Open Library only using fast API batches (best for 10k runs).",
+    )
     return parser.parse_args(argv)
 
 
@@ -686,11 +950,26 @@ def run(argv: list[str] | None = None) -> int:
     args = _parse_cli_args(list(argv) if argv is not None else sys.argv[1:])
 
     only_sources: list[str] | None = None
-    if args.goodreads_only and args.source and args.source != "Goodreads":
-        print("[ERROR] Use either --goodreads-only or --source ..., not both.")
+    mode_flags = sum(
+        [
+            bool(args.goodreads_only),
+            bool(args.storefronts_only),
+            bool(args.openlibrary_only),
+            bool(args.source),
+        ]
+    )
+    if mode_flags > 1:
+        print(
+            "[ERROR] Use only one of: --goodreads-only, --storefronts-only, "
+            "--openlibrary-only, or --source ..."
+        )
         return 1
     if args.goodreads_only:
         only_sources = ["Goodreads"]
+    elif args.storefronts_only:
+        only_sources = ["Kobo", "Audible", "BookBub"]
+    elif args.openlibrary_only:
+        only_sources = ["OpenLibrary"]
     elif args.source:
         only_sources = [args.source]
 
@@ -701,7 +980,11 @@ def run(argv: list[str] | None = None) -> int:
 
     create_project_folders(verbose=True)
     ensure_preprocessing_csv_header(verbose=True)
-    ensure_playwright_ready(verbose=True)
+    # Open Library uses HTTP API only — skip Playwright startup for speed.
+    if only_sources != ["OpenLibrary"]:
+        ensure_playwright_ready(verbose=True)
+    else:
+        print("[OK] Open Library fast mode (API only, no Playwright)")
     print()
 
     raw_isbns: list[str] = []
@@ -762,16 +1045,22 @@ def run(argv: list[str] | None = None) -> int:
     try:
         # Keep Windows from sleeping / turning the screen off during long scrapes.
         with KeepAwake(verbose=True):
-            run_scraping(
-                valid_results,
-                force_refresh=force_refresh,
-                only_sources=only_sources,
-            )
+            if only_sources == ["OpenLibrary"]:
+                run_openlibrary_fast(
+                    valid_results,
+                    force_refresh=force_refresh,
+                )
+            else:
+                run_scraping(
+                    valid_results,
+                    force_refresh=force_refresh,
+                    only_sources=only_sources,
+                )
     finally:
         stop_shared_browser()
 
     active = ", ".join(only_sources) if only_sources else (
-        "Goodreads, Amazon, Kobo, Audible, BookBub"
+        "Goodreads, Amazon, Kobo, Audible, BookBub, OpenLibrary"
     )
     print()
     print("=" * 50)

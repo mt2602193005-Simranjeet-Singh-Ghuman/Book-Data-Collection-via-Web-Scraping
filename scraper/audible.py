@@ -60,12 +60,11 @@ class AudibleScraper(BaseScraper):
         hint_authors: str = "",
         hint_titles: list[str] | None = None,
         allow_author_query: bool = False,
+        allow_title_search: bool = False,
     ) -> ScrapedBook:
         """
-        Search Audible by ISBN, then by Goodreads/Amazon title variants.
-
-        When GR+Amazon confirm (allow_author_query=True), also search title+author.
-        Author is always used for validation / ranking.
+        Search Audible by ISBN first; title search only when allowed
+        (Goodreads + Amazon confirmed). Title query never includes author.
         """
         from utils.title_match import build_title_query_variants
 
@@ -78,22 +77,26 @@ class AudibleScraper(BaseScraper):
         titles = titles or build_title_query_variants(hint_title)
         primary = titles[0] if titles else hint_title
 
-        # If another site already found title/authors, require a real title match
-        # so Audible does not accept a loosely related classic (e.g. ward vs world).
-        has_hints = bool(primary and primary != config.MISSING_VALUE)
-
+        # ISBN path: do not require GR/Amazon title match yet.
         product_urls = self._resolve_product_urls_from_searches(
             self.build_candidate_urls(isbn13)
         )
         hit, ambiguous_notes = self._try_product_urls(
             isbn13,
             product_urls,
-            require_hint_match=has_hints,
+            require_hint_match=False,
             hint_title=primary,
             hint_authors=hint_authors,
         )
         if hit is not None:
             return hit
+
+        if not allow_title_search:
+            result.error = (
+                f"Audible: ISBN search failed for {isbn13}; "
+                "title search skipped (needs Goodreads+Amazon confirm)."
+            )
+            return result
 
         title_search = self._build_title_search_urls(
             titles,

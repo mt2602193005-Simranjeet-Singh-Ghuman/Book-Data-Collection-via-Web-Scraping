@@ -148,6 +148,8 @@ def download_covers(
     source: str,
     cover_urls: list[str],
     session: Optional[requests.Session] = None,
+    *,
+    timeout_seconds: int | None = None,
 ) -> list[Path]:
     """Download cover images into output/Cover_Page/<Source>_Cover/."""
     saved: list[Path] = []
@@ -163,6 +165,11 @@ def download_covers(
         "Accept",
         "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
     )
+    timeout = (
+        int(timeout_seconds)
+        if timeout_seconds is not None
+        else config.HTTP_TIMEOUT_SECONDS
+    )
 
     # CDNs often require a matching Referer / reject hotlinks without one.
     referer_by_source = {
@@ -171,6 +178,7 @@ def download_covers(
         "Kobo": "https://www.kobo.com/",
         "Audible": "https://www.audible.com/",
         "BookBub": "https://www.bookbub.com/",
+        "OpenLibrary": "https://openlibrary.org/",
     }
 
     # Refresh-friendly: always write the primary cover as _1 (overwrite).
@@ -193,7 +201,7 @@ def download_covers(
         try:
             response = http.get(
                 url,
-                timeout=config.HTTP_TIMEOUT_SECONDS,
+                timeout=timeout,
                 headers=headers,
                 allow_redirects=True,
             )

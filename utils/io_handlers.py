@@ -382,6 +382,58 @@ def merge_source_record(
     save_source_json(source, source_data)
 
 
+def merge_source_records_batch(
+    source: str,
+    scraped_by_isbn: dict[str, JsonDict],
+    *,
+    overwrite_existing_values: bool = True,
+) -> None:
+    """
+    Merge many ISBN field dicts for one source with one master/source save.
+
+    Used by the fast Open Library batch path so 10k rows do not rewrite
+    master.json once per ISBN.
+    """
+    if source not in config.SOURCES:
+        raise ValueError(f"Unknown source: {source}")
+    if not scraped_by_isbn:
+        return
+
+    ensure_isbn_placeholders_batch(list(scraped_by_isbn.keys()))
+    master = load_master_json()
+    source_data = load_source_json(source)
+
+    for isbn13, scraped_fields in scraped_by_isbn.items():
+        isbn13 = str(isbn13).strip()
+        if not isbn13:
+            continue
+        _ensure_isbn_in_master(master, isbn13)
+        current = dict(master[isbn13][source])
+        for key, value in (scraped_fields or {}).items():
+            if key not in current and key not in config.METADATA_FIELDS:
+                continue
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text == "" or text == config.MISSING_VALUE:
+                current.setdefault(key, config.MISSING_VALUE)
+                continue
+            if overwrite_existing_values or current.get(key, config.MISSING_VALUE) in {
+                config.MISSING_VALUE,
+                "",
+                None,
+            }:
+                current[key] = text
+        current["isbn13"] = isbn13
+        current["source"] = source
+        master[isbn13][source] = current
+        master[isbn13]["isbn13"] = isbn13
+        source_data[isbn13] = current
+
+    save_master_json(master)
+    save_source_json(source, source_data)
+
+
 def append_preprocessing_log(
     isbn13: str,
     source: str,

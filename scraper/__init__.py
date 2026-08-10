@@ -9,6 +9,7 @@ from scraper.audible import AudibleScraper
 from scraper.bookbub import BookBubScraper
 from scraper.goodreads import GoodreadsScraper
 from scraper.kobo import KoboScraper
+from scraper.openlibrary import OpenLibraryScraper
 
 __all__ = [
     "AmazonScraper",
@@ -16,4 +17,5 @@ __all__ = [
     "BookBubScraper",
     "GoodreadsScraper",
     "KoboScraper",
+    "OpenLibraryScraper",
 ]

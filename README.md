@@ -4,13 +4,14 @@
 **Student:** Simranjeet Singh Ghuman  
 **Repository:** [Book-Data-Collection-via-Web-Scraping](https://github.com/mt2602193005-Simranjeet-Singh-Ghuman/Book-Data-Collection-via-Web-Scraping)
 
-Local Python CLI that looks up a book by ISBN and collects public details from five sites:
+Local Python CLI that looks up a book by ISBN and collects public details from six sites:
 
 - Amazon  
 - Kobo  
 - Audible  
 - BookBub  
 - Goodreads  
+- Open Library  
 
 There is no website UI, no Flask/Django, and no database. Everything runs in the terminal (VS Code is fine).
 
@@ -22,7 +23,7 @@ There is no website UI, no Flask/Django, and no database. Everything runs in the
 2. Checks / converts ISBN-10 → ISBN-13.  
 3. Skips ISBNs that already have real data in `master.json` (use Refresh / `--refresh` to re-scrape). Merge keeps good values; N/A never wipes prior data.  
 4. Scrapes Goodreads first (canonical title), then Amazon, then Kobo/Audible/BookBub.  
-5. Kobo / Audible / BookBub search by **Goodreads title only**; author is secondary validation. Ambiguous matches are logged as `AMBIGUOUS_TITLE_MATCH` (wrong book is not saved).  
+5. Kobo / Audible / BookBub try **ISBN first**; if that fails and Goodreads+Amazon both confirm the title, search by **title only** (no author in the query). Author is secondary validation. Ambiguous matches are logged as `AMBIGUOUS_TITLE_MATCH`.  
 6. Writes JSON, cover images, blurbs, reviews, and a preprocessing CSV log.  
 7. Shows progress like `04/20` after each ISBN finishes.  
 8. If one site or field fails, it stores `N/A`, logs the issue, and moves on.
@@ -126,6 +127,18 @@ python main.py --source Goodreads
 ```
 
 Later you can also use `--source Amazon` (or Kobo / Audible / BookBub).
+
+**Kobo + Audible + BookBub together:**
+
+```bash
+python main.py --storefronts-only
+```
+
+**Open Library only (fast API batches — best for large CSV runs):**
+
+```bash
+python main.py --openlibrary-only
+```
 
 Menu:
 

@@ -58,11 +58,11 @@ class BookBubScraper(BaseScraper):
         hint_authors: str = "",
         hint_titles: list[str] | None = None,
         allow_author_query: bool = False,
+        allow_title_search: bool = False,
     ) -> ScrapedBook:
         """
-        Search BookBub by ISBN, then Goodreads/Amazon title variants + slugs.
-
-        When GR+Amazon confirm, also try title+author search queries.
+        Search BookBub by ISBN first; title/slug fallback only when allowed
+        (Goodreads + Amazon confirmed). Title query never includes author.
         """
         from utils.title_match import build_title_query_variants
 
@@ -79,12 +79,13 @@ class BookBubScraper(BaseScraper):
             self.build_candidate_urls(isbn13)
         )
         used_title_fallback = False
-        if not product_urls:
+        if not product_urls and allow_title_search:
             # Prefer guessed /books/<slug> URLs first: BookBub /search is often
             # geo-blocked and can return truncated junk links like /books/everything.
             direct_books: list[str] = []
             for title in titles or [hint_title]:
-                for slug in self._title_author_slugs(title, hint_authors):
+                # Slug from title only (no author in discovery query).
+                for slug in self._title_author_slugs(title, ""):
                     direct_books.append(f"https://www.bookbub.com/books/{slug}")
             direct_books = self.unique_non_empty(direct_books)
 
@@ -109,6 +110,11 @@ class BookBubScraper(BaseScraper):
                     discovery_note = title_note
                 elif not product_urls:
                     discovery_note = f"{discovery_note} Title search: {title_note}"
+        elif not product_urls and not allow_title_search:
+            discovery_note = (
+                f"{discovery_note} Title search skipped "
+                "(needs Goodreads+Amazon confirm)."
+            )
 
         if not product_urls:
             # Keep discovery_note in the log only (via result.error detail for CSV).

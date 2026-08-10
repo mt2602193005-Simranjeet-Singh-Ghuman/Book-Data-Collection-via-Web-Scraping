@@ -57,12 +57,11 @@ class KoboScraper(BaseScraper):
         hint_authors: str = "",
         hint_titles: list[str] | None = None,
         allow_author_query: bool = False,
+        allow_title_search: bool = False,
     ) -> ScrapedBook:
         """
-        Scrape Kobo: ISBN first, then title variants from Goodreads/Amazon.
-
-        When GR+Amazon both confirm (allow_author_query=True), also try
-        title+author search. Author is always used for match validation.
+        Scrape Kobo: ISBN first; title search only when allowed
+        (Goodreads + Amazon confirmed). Title query never includes author.
         """
         from utils.title_match import build_title_query_variants
 
@@ -76,6 +75,13 @@ class KoboScraper(BaseScraper):
         )
         if hit is not None:
             return hit
+
+        if not allow_title_search:
+            result.error = (
+                f"Kobo: ISBN search failed for {isbn13}; "
+                "title search skipped (needs Goodreads+Amazon confirm)."
+            )
+            return result
 
         titles = list(hint_titles or [])
         if hint_title and hint_title not in titles:
